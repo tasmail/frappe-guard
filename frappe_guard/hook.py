@@ -25,14 +25,15 @@ def guard_request() -> None:
 		request is None or request.method == "OPTIONS"
 	):  # a CORS preflight has no session and no client address
 		return
+	token = take_token(frappe.form_dict)  # the token never reaches an endpoint, guarded or not
 	try:
 		action = actions.action_of(request, frappe.form_dict)
 	except Exception:  # noqa: BLE001  every request of the site passes here: a bug of the map must not become a 500
-		frappe.logger("frappe_guard").info("the action of the request could not be told")
+		# fail open on purpose (Frappe answers), but loud: a systematic bug would otherwise disable the guard silently
+		frappe.logger("frappe_guard").error("the action of the request could not be told", exc_info=True)
 		return
 	if action is None:
 		return
-	token = take_token(frappe.form_dict)
 	if frappe.session.user not in ("Guest", "", None):
 		return  # a signed-in user (also an API key or bearer) skips the captcha; the counters of P8 still apply
 	decision = check.evaluate(action, token)

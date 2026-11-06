@@ -95,19 +95,50 @@ def test_the_login_action_is_not_mapped_here():
 	assert actions.action_of(request("/login"), {"cmd": "login"}) is None
 
 
-def test_a_matched_rpc_rule_without_a_string_method_gives_none(monkeypatch):
+def _fake_map(monkeypatch, endpoint, arguments):
 	import sys
-
-	def handle_rpc_call():
-		pass
 
 	class Bound:
 		def match(self):
-			return handle_rpc_call, {"method": None}
+			return endpoint, arguments
 
 	class Map:
 		def bind_to_environ(self, environ):
 			return Bound()
 
 	monkeypatch.setattr(sys.modules["frappe.api"], "API_URL_MAP", Map())
+
+
+def test_a_matched_rpc_rule_without_a_string_method_gives_none(monkeypatch):
+	import sys
+
+	_fake_map(monkeypatch, sys.modules["frappe.api"].v1.handle_rpc_call, {"method": None})
 	assert method_of("/api/method/x") is None
+
+
+def test_an_endpoint_that_is_only_named_like_the_rpc_one_does_not_match(monkeypatch):
+	def handle_rpc_call():  # same name, not the endpoint of Frappe
+		pass
+
+	_fake_map(monkeypatch, handle_rpc_call, {"method": SIGN_UP})
+	assert method_of("/api/method/x") is None
+
+
+@pytest.mark.parametrize(
+	"path", ["/api/v1/method/upload_file", "/api/method/upload_file", "/api/v2/method/upload_file"]
+)
+def test_upload_file_names_the_method_it_calls(path):
+	assert method_of(path, {"method": SIGN_UP}) == SIGN_UP
+	assert method_of(path, {"method": 5}) == "upload_file"
+	assert method_of("/x", {"cmd": "upload_file", "method": SIGN_UP}) == SIGN_UP
+	assert method_of("/x", {"cmd": "frappe.handler.upload_file", "method": SIGN_UP}) == SIGN_UP
+
+
+def test_an_empty_cmd_falls_through_to_the_router_as_in_frappe():
+	assert method_of(f"/api/method/{SIGN_UP}", {"cmd": ""}) == SIGN_UP
+	assert method_of("/x", {"cmd": ""}) is None
+
+
+def test_head_and_the_v2_prefix_with_cmd():
+	assert method_of(f"/api/method/{SIGN_UP}", http="HEAD") == SIGN_UP
+	assert method_of("/api/v2/method/ping", {"cmd": SIGN_UP}) == SIGN_UP  # cmd wins, as in Frappe

@@ -17,6 +17,9 @@ class _Logger:
 	def info(self, message, *args):
 		self.lines.append(message % args if args else message)
 
+	def error(self, message, *args, **kwargs):
+		self.lines.append(message % args if args else message)
+
 
 class _Db:
 	def __init__(self):
@@ -30,14 +33,20 @@ def _frappe_url_map():
 	"""The routing of `frappe/api/__init__.py` (v15) with the same mounts and options and stand-in endpoints."""
 	from werkzeug.routing import Map, Rule, Submount
 
-	def handle_rpc_call(**kw):  # v1 and v2 name their endpoint like this
+	def v1_rpc(**kw):
 		return "rpc"
+
+	def v2_rpc(**kw):
+		return "rpc"
+
+	def v2_upload(**kw):
+		return "upload"
 
 	def other(**kw):
 		return "other"
 
 	v1 = [
-		Rule("/method/<path:method>", endpoint=handle_rpc_call),
+		Rule("/method/<path:method>", endpoint=v1_rpc),
 		Rule("/resource/<doctype>", methods=["GET"], endpoint=other),
 		Rule("/resource/<doctype>/<path:name>/", methods=["GET"], endpoint=other),
 	]
@@ -45,15 +54,20 @@ def _frappe_url_map():
 		Rule("/method/login", endpoint=other),
 		Rule("/method/logout", endpoint=other),
 		Rule("/method/ping", endpoint=other),
-		Rule("/method/upload_file", endpoint=other),
-		Rule("/method/<method>", endpoint=handle_rpc_call),
-		Rule("/method/<doctype>/<method>", endpoint=handle_rpc_call),
+		Rule("/method/upload_file", endpoint=v2_upload),
+		Rule("/method/<method>", endpoint=v2_rpc),
+		Rule("/method/<doctype>/<method>", endpoint=v2_rpc),
 		Rule("/document/<doctype>", methods=["GET"], endpoint=other),
 	]
-	return Map(
+	url_map = Map(
 		[Submount("/api", v1), Submount("/api/v1", v1), Submount("/api/v2", v2)],
 		strict_slashes=False,
 		merge_slashes=False,
+	)
+	return (
+		url_map,
+		types.SimpleNamespace(handle_rpc_call=v1_rpc),
+		types.SimpleNamespace(handle_rpc_call=v2_rpc, upload_file=v2_upload),
 	)
 
 
@@ -74,7 +88,7 @@ def _make_frappe():
 	document = types.ModuleType("frappe.model.document")
 	document.Document = type("Document", (), {})
 	api = types.ModuleType("frappe.api")
-	api.API_URL_MAP = _frappe_url_map()
+	api.API_URL_MAP, api.v1, api.v2 = _frappe_url_map()
 	modules = types.ModuleType("frappe.modules")
 	modules_utils = types.ModuleType("frappe.modules.utils")
 

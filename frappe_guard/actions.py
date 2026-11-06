@@ -19,7 +19,8 @@ DEFAULT_MAP = {
 	"fossdoc_shop.api.send_calculation": "calculation",
 }
 API_PREFIX = "/api/"
-RPC_ENDPOINT = "handle_rpc_call"
+# `upload_file` is open to guests and calls the method named in its `method` field: that name is the requested method then.
+UPLOAD_METHODS = {"upload_file", "frappe.handler.upload_file", "uploadfile"}
 
 
 def action_map() -> dict[str, str]:
@@ -40,13 +41,29 @@ def action_map() -> dict[str, str]:
 def requested_method(request, form_dict) -> str | None:
 	"""The dotted method that Frappe will call for this request, or None when it is not a method call."""
 	cmd = form_dict.get("cmd") if isinstance(form_dict, dict) else None
+	path = request.path or ""
 	if cmd:
-		return (
-			cmd if isinstance(cmd, str) else None
-		)  # a non-string `cmd` fails in the handler of Frappe itself
-	if not (request.path or "").startswith(API_PREFIX):
+		# a non-string `cmd` fails in the handler of Frappe itself: nothing is run
+		method = cmd if isinstance(cmd, str) else None
+	elif path.startswith(API_PREFIX) and "/method/" in path:
+		method = _routed_method(request)
+	else:
 		return None
-	return _routed_method(request)
+	if method in UPLOAD_METHODS and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
+		return form_dict["method"]
+	return method
+
+
+def _v2():
+	from frappe.api import v2
+
+	return v2
+
+
+def _rpc_endpoints() -> tuple:
+	from frappe.api import v1
+
+	return (v1.handle_rpc_call, _v2().handle_rpc_call)
 
 
 def _routed_method(request) -> str | None:
@@ -56,14 +73,17 @@ def _routed_method(request) -> str | None:
 		endpoint, arguments = API_URL_MAP.bind_to_environ(request.environ).match()
 	except Exception:  # noqa: BLE001  NotFound, MethodNotAllowed, RequestRedirect: Frappe answers these itself
 		return None
-	if getattr(endpoint, "__name__", "") != RPC_ENDPOINT:
+	if (
+		endpoint is _v2().upload_file
+	):  # the static v2 rule `/method/upload_file`: it calls the method of its `method` field
+		return "upload_file"
+	if endpoint not in _rpc_endpoints():  # by identity: a renamed or foreign endpoint must not match by name
 		return None
 	method = arguments.get("method")
 	if not isinstance(method, str):
 		return None
-	method = method.split("/")[
-		0
-	]  # v1: `/method/<m>/anything` still runs <m> (backward compatibility of Frappe)
+	# v1: `/method/<m>/anything` still runs <m> (backward compatibility of Frappe)
+	method = method.split("/")[0]
 	if arguments.get("doctype"):  # v2: `/method/<doctype>/<method>` calls the method of the controller module
 		try:
 			from frappe.modules.utils import load_doctype_module

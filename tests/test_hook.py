@@ -83,6 +83,11 @@ def test_a_signed_in_user_skips_the_captcha_but_the_token_is_still_removed(send,
 	assert evaluated == []
 
 
+def test_the_token_field_is_removed_from_an_unguarded_request_too(send, evaluated, frappe_stub):
+	send("/login", form={"cmd": "login", "guard_token": "t"})
+	assert frappe_stub.form_dict == {"cmd": "login"} and evaluated == []
+
+
 def test_an_error_in_the_map_never_becomes_a_500(send, evaluated, monkeypatch, frappe_stub):
 	def boom(request, form_dict):
 		raise RuntimeError("map")
