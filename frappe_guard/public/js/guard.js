@@ -5,17 +5,22 @@
  *   const response = await FrappeGuard.request("/api/method/frappe.www.contact.send_message", {
  *     action: "contact", method: "POST", body: formData });
  *
- * - The script of the provider is loaded on the first interaction with a protected form (`warm`), not at page load, and
- *   not behind the analytics banner: it is named in the privacy text as anti-abuse (plan G6). It is tried on
- *   www.google.com and, when that does not load, on www.recaptcha.net.
- * - A token is single use and lives two minutes: one is made for every request, never reused. The whole step is capped
- *   at 8 seconds; when the provider cannot be reached the next requests do not wait for it again for 15 seconds.
- * - The token travels in the header `X-Guard-Token`. The request asks for JSON (`Accept` and `X-Requested-With`).
- * - No failure of the browser side is thrown: when no token can be made the request goes without one and the server
- *   decides (in `monitor` it passes, in `enforce` it answers that the check failed and asks to reload).
- * - The site key is public; put it in the page (`init`), never fetch it from an endpoint (a fetch counts against the
- *   edge limit).
- * - Another `api.js?render=OTHER` on the same page makes `execute` fail with an invalid key: load only one.
+ * - The script of the provider is loaded on the first interaction with a protected form (`warm`),
+ *   not at page load, and not behind the analytics banner: it is named in the privacy text as
+ *   anti-abuse (plan G6). It is tried on www.google.com and, when that does not load, on
+ *   www.recaptcha.net.
+ * - A token is single use and lives two minutes: one is made for every request, never reused. The
+ *   whole step is capped at 8 seconds; when the provider cannot be reached the next requests do
+ *   not wait for it again for 15 seconds.
+ * - The token travels in the header `X-Guard-Token`. The request asks for JSON (`Accept` and
+ *   `X-Requested-With`).
+ * - No failure of the browser side is thrown: when no token can be made the request goes without
+ *   one and the server decides (in `monitor` it passes, in `enforce` it answers that the check
+ *   failed and asks to reload).
+ * - The site key is public; put it in the page (`init`), never fetch it from an endpoint (a fetch
+ *   counts against the edge limit).
+ * - Another `api.js?render=OTHER` on the same page makes `execute` fail with an invalid key: load
+ *   only one.
  */
 (function (root, factory) {
 	"use strict";
@@ -147,7 +152,8 @@
 				})
 				.catch(function (error) {
 					if (error && /^(timeout|load)/.test(error.message)) {
-						unreachableUntil = now() + UNREACHABLE_FOR; // the provider cannot be reached: do not wait again
+						// the provider cannot be reached: do not wait for it again
+						unreachableUntil = now() + UNREACHABLE_FOR;
 					}
 					return ""; // never thrown: the server decides what a request without a token is
 				});
