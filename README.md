@@ -1,13 +1,14 @@
 # frappe_guard
 
-CAPTCHA and rate limit for the public forms and the guest endpoints of Frappe v15 sites (contact forms, sign-up, password reset,
-e-mail login link, downloads).
+CAPTCHA and rate limit for the registration, the login and the contact form of Frappe v15 sites (sign-up, password reset, the
+e-mail login link and the contact form; the password login is planned, see Status).
 
 Status: **under construction, nothing is released and it is not installed on any site yet.** Merged: the skeleton, the check core,
 the request hook, the rate limiter and the browser script. Not built yet: protection of the password `login` (**`login` is not
 protected today**), the script for the stock `/login` page (package P6: that page's sign-up, reset and e-mail-link forms send no
-token yet), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the migration of the code that
-lives in `fossdoc_shop`.
+token yet), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the migration of the contact form
+of the FossDoc shop (after the migration the check in `fossdoc_shop` remains only for the download and the calculation, which this
+app does not cover).
 **Cost in short:** microseconds per request that is not guarded; one or two Redis round trips and, for a guest, one call to Google
 per guarded request (see Performance).
 
@@ -15,12 +16,11 @@ The plan, the decisions and the work packages are in `docs/guard/plan.md` of the
 
 ## Why
 
-The public endpoints of a Frappe site are open to anyone, and bots use them for two things:
+The registration, the login and the contact form of a Frappe site are open to anyone, and bots use them:
 
 - **Mail abuse.** `sign_up`, `reset_password` and `send_login_link` send an e-mail to an address chosen by the caller: an attacker
   makes the site mail a victim thousands of times (and burns the reputation of the sending domain). A contact form is spammed the
   same way, and every acknowledgement is a mail to a stranger.
-- **Cost and spam.** Forms that start work for a stranger (a calculation, a download link) are called in bulk.
 
 Frappe's own protection does not cover this: the limit of `@rate_limit` is keyed on `frappe.local.request_ip`, which is the
 left-most entry of `X-Forwarded-For` and is chosen by the client (change the header, change the bucket); `sign_up` has no limit
@@ -70,8 +70,9 @@ account can abuse `sign_up` and the mail actions too.
 
 ## Which endpoints it closes
 
-The map `method -> action` is data: the code holds defaults for the stock Frappe endpoints and for the two FossDoc shop endpoints
-(`fossdoc_shop.*`, which exist only on the FossDoc sites); a site adds its own in `guard_action_map`.
+The map `method -> action` is data: the code holds the defaults for the four stock Frappe endpoints below (the password `login` is
+described after the table); a site adds its own in `guard_action_map`. The download and the calculation of the FossDoc shop keep
+the CAPTCHA check that lives in `fossdoc_shop`: this app does not cover them.
 
 | Action | Endpoint (default map) | Why | When the provider is down | Counters besides the address and the site |
 | --- | --- | --- | --- | --- |
@@ -79,15 +80,14 @@ The map `method -> action` is data: the code holds defaults for the stock Frappe
 | `reset_password` | `frappe.core.doctype.user.user.reset_password` | mails the user in `user` | pass (fail open) | recipient (`user`); account (signed-in only) |
 | `send_login_link` | `frappe.www.login.send_login_link` | mails a login link to `email` | pass (fail open) | recipient (`email`); account (signed-in only) |
 | `contact` | `frappe.www.contact.send_message` | sends a message to the company (and, if enabled in Contact Us Settings, an acknowledgement to the sender) | refuse | |
-| `download` | `fossdoc_shop.downloads.request_download` | mails download links of the FossDoc demo | refuse | |
-| `calculation` | `fossdoc_shop.api.send_calculation` | mails the calculation of the FossDoc shop | refuse | |
 
 *Fail open* for reset and the link (and for the future `login`) is deliberate: a Google outage must not lock customers out of their
 accounts; the counters still bound the abuse. The forms and sign-up *fail closed* with a message that asks to try again later.
 The same policy governs an outage of Redis (the counters): with Redis down a closed action (the forms, sign-up) refuses everyone in
 `enforce`, an open one passes.
 
-**What it does not close.** Other guest endpoints of Frappe (newsletter `subscribe`, which mails a confirmation to an address the
+**What it does not close.** The download (`fossdoc_shop.downloads.request_download`) and the calculation
+(`fossdoc_shop.api.send_calculation`) of the FossDoc shop keep their own check inside `fossdoc_shop`. Other guest endpoints of Frappe (newsletter `subscribe`, which mails a confirmation to an address the
 caller chooses, Web Form `accept`, the comment `add_comment`, and any app's own) are **not guarded until a site adds them** to
 `guard_action_map`; a custom action has the address and site counters but no recipient counter. The password `login` (`cmd=login`, `/api/method/login`) is processed by Frappe's `LoginManager`
 inside `HTTPRequest()`, **before any hook**, so this hook cannot see it; it needs its own mechanism (package P7: a wrapper of
@@ -209,7 +209,7 @@ the request is refused (in `enforce`). Defaults (`ratelimit.py`; `guard_limits` 
 | the same | `account` (signed-in) | 1 h | 20 | 20 |
 | the same | `recipient` | 1 h | 20 | 20 |
 | the same | `site` | 1 h | 200 | 600 |
-| `contact`, `download`, `calculation` and any other action | `ip` | 1 h | 20 | 100 |
+| `contact` and any other action | `ip` | 1 h | 20 | 100 |
 | the same | `site` | 1 h | 300 | 1000 |
 
 `ip` has two limits (the burst and the hourly one); naming `ip` in `guard_limits` replaces both. The `account` and `recipient`

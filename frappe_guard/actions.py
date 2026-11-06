@@ -10,15 +10,14 @@ import importlib
 
 import frappe
 
-# The stock endpoints. A site adds its own in `guard_action_map` of the site config ({"dotted.method": "action"}); the sites of
-# FOSS use `contact`, `download` and `calculation`. `login` is not here: it is processed before the hooks (LoginManager).
+# The stock Frappe endpoints of sign-up, login by e-mail, password reset and the contact form. A site adds its own in
+# `guard_action_map` of the site config ({"dotted.method": "action"}). `login` is not here: it is processed before the hooks
+# (LoginManager).
 DEFAULT_MAP = {
 	"frappe.core.doctype.user.user.sign_up": "sign_up",
 	"frappe.core.doctype.user.user.reset_password": "reset_password",
 	"frappe.www.login.send_login_link": "send_login_link",
 	"frappe.www.contact.send_message": "contact",
-	"fossdoc_shop.downloads.request_download": "download",
-	"fossdoc_shop.api.send_calculation": "calculation",
 }
 API_PREFIX = "/api/"
 # `upload_file` is open to guests and calls the method named in its `method` field: that name is the requested method then.

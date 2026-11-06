@@ -69,8 +69,6 @@ DEFAULTS = {
 		_action("send_login_link", OPEN),
 		_action("login", OPEN),
 		_action("contact"),
-		_action("download"),
-		_action("calculation"),
 	)
 }
 
