@@ -21,6 +21,47 @@ class _Logger:
 		self.lines.append(message % args if args else message)
 
 
+class FakeCache:
+	"""The part of `frappe.cache` (a `redis.Redis` subclass) that the guard uses: a transaction pipeline of SET NX EX and INCR."""
+
+	def __init__(self):
+		self.values, self.ttls, self.down = {}, {}, False
+
+	def make_key(self, key):
+		return f"db|{key}".encode()
+
+	def pipeline(self, transaction=True):
+		return _Pipeline(self)
+
+
+class _Pipeline:
+	def __init__(self, cache):
+		self.cache, self.commands = cache, []
+
+	def set(self, key, value, ex=None, nx=False):
+		self.commands.append(("set", key, value, ex, nx))
+
+	def incr(self, key):
+		self.commands.append(("incr", key))
+
+	def execute(self):
+		if self.cache.down:
+			raise ConnectionError("redis is down")
+		results = []
+		for command in self.commands:
+			if command[0] == "set":
+				_, key, value, ex, nx = command
+				if nx and key in self.cache.values:
+					results.append(None)
+				else:
+					self.cache.values[key], self.cache.ttls[key] = value, ex
+					results.append(True)
+			else:
+				self.cache.values[command[1]] += 1
+				results.append(self.cache.values[command[1]])
+		return results
+
+
 class _Db:
 	def __init__(self):
 		self.singles = {}
@@ -131,6 +172,7 @@ def frappe_stub():
 	FRAPPE.conf = FRAPPE.local.conf
 	FRAPPE.flags = types.SimpleNamespace(in_test=False)
 	FRAPPE.db = _Db()
+	FRAPPE.cache = FakeCache()
 	FRAPPE.form_dict = {}
 	FRAPPE.headers = {}
 	FRAPPE.session = types.SimpleNamespace(user="Guest")

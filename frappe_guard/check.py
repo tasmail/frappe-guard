@@ -19,6 +19,8 @@ MAX_TOKEN = 4096
 def message(outcome: Outcome) -> str:
 	if outcome == Outcome.PROVIDER_ERROR:
 		return _("The check of the form is not available now. Try again later.")
+	if outcome == Outcome.RATE_LIMITED:
+		return _("Too many requests. Try again later.")
 	if outcome == Outcome.NOT_CONFIGURED:
 		return _("The check of the form is not configured")
 	return _("The check of the form failed. Reload the page and try again.")
@@ -29,14 +31,14 @@ def _usable(token) -> bool:
 	return isinstance(token, str) and 0 < len(token) <= MAX_TOKEN
 
 
-def evaluate(action: str, token, provider=None) -> Decision:
+def evaluate(action: str, token, provider=None, threshold_bonus: float = 0) -> Decision:
 	"""Decide whether a request of `action` with `token` passes. Never raises; the caller throws on `allow` False.
 
 	An unexpected error is an outage of the check: the fail policy of the action decides, in the configured mode (in `monitor`
 	when the configuration itself cannot be read), so a broken check neither crashes the request nor opens a closed action.
 	"""
 	try:
-		return _evaluate(action, token, provider)
+		return _evaluate(action, token, provider, threshold_bonus)
 	except Exception:  # noqa: BLE001  by design: a broken check must not break the request
 		_log("the check failed unexpectedly: action=%s", action)
 		return decide(_fallback_policy(action), Verdict(Outcome.PROVIDER_ERROR))
@@ -62,7 +64,7 @@ def _fallback_policy(action: str):
 		return replace(DEFAULTS.get(action) or config.policy.resolve(action), mode=MONITOR)
 
 
-def _evaluate(action: str, token, provider) -> Decision:
+def _evaluate(action: str, token, provider, threshold_bonus: float = 0) -> Decision:
 	policy = config.policy_for(action)
 	if policy.mode == OFF:
 		return decide(policy, Verdict(Outcome.OFF))
@@ -75,7 +77,10 @@ def _evaluate(action: str, token, provider) -> Decision:
 		verdict = Verdict(Outcome.MISSING)
 	else:
 		provider = provider or RecaptchaV3(secret, hosts)
-		verdict = provider.verify(token, policy.provider_action, policy.threshold)
+		threshold = min(
+			1.0, policy.threshold + max(0, threshold_bonus)
+		)  # above a soft limit the score demanded rises
+		verdict = provider.verify(token, policy.provider_action, threshold)
 	decision = decide(policy, verdict)
 	record(action, decision)
 	return decision
