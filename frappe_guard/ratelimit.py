@@ -101,46 +101,85 @@ def limits_for(action: str) -> tuple[Limit, ...]:
 	return tuple(limit for limit in defaults if limit.kind not in named) + valid
 
 
-def hit(action: str, kind: str, ident: str, window: int) -> int:
-	"""Count one request and return the count of its window. Raises when Redis fails."""
-	key = frappe.cache.make_key(f"guard:{action}:{kind}:{window}:{identifier(ident)}")
+def _key(action: str, kind: str, ident: str, window: int) -> bytes:
+	return frappe.cache.make_key(f"guard:{action}:{kind}:{window}:{identifier(ident)}")
+
+
+def hit_many(entries: list[tuple[str, str, str, int]]) -> list[int]:
+	"""Count one request in every entry (action, kind, identity, window) in ONE round trip to Redis and return the counts.
+
+	One MULTI/EXEC transaction of `SET key 0 EX window NX` and `INCR key` per entry: atomic, and the cost of a guarded request
+	is one round trip however many counters it has. Raises when Redis fails.
+	"""
 	pipe = frappe.cache.pipeline(transaction=True)
-	pipe.set(key, 0, ex=window, nx=True)
-	pipe.incr(key)
-	return int(pipe.execute()[-1])
+	keys = [_key(*entry) for entry in entries]
+	for key, entry in zip(keys, entries, strict=True):
+		pipe.set(key, 0, ex=entry[3], nx=True)
+		pipe.incr(key)
+	return [int(count) for count in pipe.execute()[1::2]]
+
+
+def hit(action: str, kind: str, ident: str, window: int) -> int:
+	"""Count one request in one counter and return the count of its window. Raises when Redis fails."""
+	return hit_many([(action, kind, ident, window)])[0]
+
+
+def _refund(entries: list[tuple[str, str, str, int]]) -> None:
+	"""Take back the counts of the counters that a refused request must not feed (best effort, never raises)."""
+	try:
+		pipe = frappe.cache.pipeline(transaction=True)
+		for entry in entries:
+			pipe.decr(_key(*entry))
+		pipe.execute()
+	except Exception:  # noqa: BLE001, S110  a counter that was not refunded only errs on the side of refusing
+		pass
 
 
 def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIND_ORDER) -> RateResult:
 	"""Count the request against the limits of the given kinds and return the worst level.
 
-	The kinds are counted in the order of `KIND_ORDER`; after the first hard limit nothing more is counted, so a refused request
-	does not feed the shared counters. A missing identity is not counted; an unknown client address (see `clientip`) is counted
-	per action and window under the kind `unknown` (never refused), and then the site limit can only raise the score, not
-	refuse (one client with no address of its own must not be able to lock everyone out).
+	One round trip to Redis for all the counters (a second one only when the request is refused). The kinds are ordered as
+	`KIND_ORDER`; the counters after the first hard limit are given back, so a refused request does not feed the shared
+	counters. A missing identity is not counted; an unknown client address (see `clientip`) is counted per action and window
+	under the kind `unknown` (never refused), and then the site limit can only raise the score, not refuse (one client with no
+	address of its own must not be able to lock everyone out).
 	"""
-	worst = RateResult()
-	limits = sorted(limits_for(action), key=lambda limit: KIND_ORDER.index(limit.kind))
+	unknown_client = identities.get("ip") == UNKNOWN
+	plan = []  # (limit, the entry that is counted)
+	for limit in sorted(limits_for(action), key=lambda limit: KIND_ORDER.index(limit.kind)):
+		ident = identities.get(limit.kind)
+		if limit.kind not in kinds or not ident:
+			continue
+		# an unknown address has no counter of its own: the requests of unknown clients are counted (never refused), so that
+		# the loud log line of `clientip` is not the only signal that the proxy chain is not what is configured
+		plan.append(
+			(
+				limit,
+				(action, "unknown", SITE_IDENT, limit.window)
+				if ident == UNKNOWN
+				else (action, limit.kind, ident, limit.window),
+			)
+		)
+	if not plan:
+		return RateResult()
 	try:
-		for limit in limits:
-			ident = identities.get(limit.kind)
-			if limit.kind not in kinds or not ident:
-				continue
-			if ident == UNKNOWN:
-				# no per-client counter is possible; count the requests of unknown clients (never refused) so that the
-				# loud log line of `clientip` is not the only signal that the proxy chain is not what is configured
-				hit(action, "unknown", SITE_IDENT, limit.window)
-				continue
-			count = hit(action, limit.kind, ident, limit.window)
-			level = Level.HARD if count > limit.hard else Level.SOFT if count > limit.soft else Level.OK
-			if limit.kind == "site" and identities.get("ip") == UNKNOWN:
-				# with no per-client counter one client could use the site limit up and refuse everyone: it only raises the score
-				level = min(level, Level.SOFT)
-			if level > worst.level:
-				worst = RateResult(level, limit.kind)
-			if worst.level == Level.HARD:
-				break
+		counts = hit_many([entry for _, entry in plan])
 	except Exception:  # noqa: BLE001  Redis down: the fail policy of the action decides
 		return RateResult(Level.HARD if fail == CLOSED else Level.OK, error=True)
+	worst = RateResult()
+	for position, ((limit, entry), count) in enumerate(zip(plan, counts, strict=True)):
+		if entry[1] == "unknown":
+			continue
+		level = Level.HARD if count > limit.hard else Level.SOFT if count > limit.soft else Level.OK
+		if limit.kind == "site" and unknown_client:
+			level = min(
+				level, Level.SOFT
+			)  # one client must not be able to use the site limit up and refuse everyone
+		if level > worst.level:
+			worst = RateResult(level, limit.kind)
+		if level == Level.HARD:
+			_refund([later for _, later in plan[position + 1 :] if later[1] != "unknown"])
+			break
 	return worst
 
 

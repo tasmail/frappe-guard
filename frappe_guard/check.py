@@ -31,14 +31,14 @@ def _usable(token) -> bool:
 	return isinstance(token, str) and 0 < len(token) <= MAX_TOKEN
 
 
-def evaluate(action: str, token, provider=None, threshold_bonus: float = 0) -> Decision:
+def evaluate(action: str, token, provider=None, threshold_bonus: float = 0, policy=None) -> Decision:
 	"""Decide whether a request of `action` with `token` passes. Never raises; the caller throws on `allow` False.
 
 	An unexpected error is an outage of the check: the fail policy of the action decides, in the configured mode (in `monitor`
 	when the configuration itself cannot be read), so a broken check neither crashes the request nor opens a closed action.
 	"""
 	try:
-		return _evaluate(action, token, provider, threshold_bonus)
+		return _evaluate(action, token, provider, threshold_bonus, policy)
 	except Exception:  # noqa: BLE001  by design: a broken check must not break the request
 		_log("the check failed unexpectedly: action=%s", action)
 		return decide(policy_of(action), Verdict(Outcome.PROVIDER_ERROR))
@@ -64,8 +64,8 @@ def policy_of(action: str):
 		return replace(DEFAULTS.get(action) or config.policy.resolve(action), mode=MONITOR)
 
 
-def _evaluate(action: str, token, provider, threshold_bonus: float = 0) -> Decision:
-	policy = config.policy_for(action)
+def _evaluate(action: str, token, provider, threshold_bonus: float = 0, policy=None) -> Decision:
+	policy = policy or config.policy_for(action)
 	if policy.mode == OFF:
 		return decide(policy, Verdict(Outcome.OFF))
 	secret, hosts = config.secret(), config.hosts()

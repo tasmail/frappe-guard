@@ -26,6 +26,7 @@ class FakeCache:
 
 	def __init__(self):
 		self.values, self.ttls, self.down = {}, {}, False
+		self.round_trips = 0  # one per executed pipeline
 
 	def make_key(self, key):
 		return f"db|{key}".encode()
@@ -44,9 +45,13 @@ class _Pipeline:
 	def incr(self, key):
 		self.commands.append(("incr", key))
 
+	def decr(self, key):
+		self.commands.append(("decr", key))
+
 	def execute(self):
 		if self.cache.down:
 			raise ConnectionError("redis is down")
+		self.cache.round_trips += 1
 		results = []
 		for command in self.commands:
 			if command[0] == "set":
@@ -57,7 +62,7 @@ class _Pipeline:
 					self.cache.values[key], self.cache.ttls[key] = value, ex
 					results.append(True)
 			else:
-				self.cache.values[command[1]] += 1
+				self.cache.values[command[1]] += 1 if command[0] == "incr" else -1
 				results.append(self.cache.values[command[1]])
 		return results
 
@@ -168,7 +173,7 @@ FRAPPE = _make_frappe()
 
 @pytest.fixture(autouse=True)
 def frappe_stub():
-	FRAPPE.local = types.SimpleNamespace(conf={}, form_dict={}, request=None)
+	FRAPPE.local = types.SimpleNamespace(conf={}, form_dict={}, request=None, site="test.local")
 	FRAPPE.conf = FRAPPE.local.conf
 	FRAPPE.flags = types.SimpleNamespace(in_test=False)
 	FRAPPE.db = _Db()
@@ -178,5 +183,11 @@ def frappe_stub():
 	FRAPPE.session = types.SimpleNamespace(user="Guest")
 	FRAPPE.doctype_modules = {}
 	FRAPPE.log.lines.clear()
-	sys.modules["frappe_guard.clientip"]._warned.clear() if "frappe_guard.clientip" in sys.modules else None
+	for name, reset in (
+		("frappe_guard.clientip", lambda m: m._warned.clear()),
+		("frappe_guard.config", lambda m: m.reset()),
+		("frappe_guard.actions", lambda m: m._resolve.cache_clear()),
+	):
+		if name in sys.modules:
+			reset(sys.modules[name])
 	return FRAPPE

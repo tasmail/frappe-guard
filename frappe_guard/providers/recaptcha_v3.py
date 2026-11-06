@@ -7,7 +7,7 @@ import requests
 from frappe_guard.policy import Outcome, Verdict
 
 VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
-TIMEOUT = 5
+TIMEOUT = 3  # seconds: the call blocks a worker of the site, a slow provider must not hold it for long
 
 
 # A wrong or revoked secret is a fault of the configuration, not of the token.

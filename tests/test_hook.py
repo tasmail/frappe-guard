@@ -39,7 +39,7 @@ def evaluated(monkeypatch):
 	calls = Calls()
 	calls.bonus = []
 
-	def evaluate(action, token, threshold_bonus=0):
+	def evaluate(action, token, threshold_bonus=0, policy=None):
 		calls.bonus.append(threshold_bonus)
 		calls.append((action, token))
 		return Decision(calls_allow["allow"], Outcome.PASS if calls_allow["allow"] else Outcome.LOW_SCORE)

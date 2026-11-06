@@ -48,7 +48,7 @@ def guard_request() -> None:
 	if signed_in:
 		return  # a signed-in user (also an API key or bearer) skips the captcha; the counters above applied
 	bonus = ratelimit.SOFT_BONUS if result.level == ratelimit.Level.SOFT else 0
-	decision = check.evaluate(action, token, threshold_bonus=bonus)
+	decision = check.evaluate(action, token, threshold_bonus=bonus, policy=policy)
 	if not decision.allow:
 		frappe.throw(check.message(decision.outcome), frappe.ValidationError)
 	if decision.outcome == Outcome.PASS or not decision.would_refuse:

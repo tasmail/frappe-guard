@@ -6,6 +6,7 @@ path and with any HTTP method) wins over the path; only when `cmd` is empty is t
 method cannot bypass the map. The name is matched as requested, before `override_whitelisted_methods`.
 """
 
+import functools
 import importlib
 
 import frappe
@@ -41,7 +42,7 @@ def action_map() -> dict[str, str]:
 	return {**DEFAULT_MAP, **extra}
 
 
-def requested_method(request, form_dict) -> str | None:
+def requested_method(request, form_dict, known=()) -> str | None:
 	"""The dotted method that Frappe will call for this request, or None when it is not a method call."""
 	cmd = form_dict.get("cmd") if isinstance(form_dict, dict) else None
 	path = request.path or ""
@@ -52,18 +53,18 @@ def requested_method(request, form_dict) -> str | None:
 		method = _routed_method(request)
 	else:
 		return None
-	if _is_upload(method) and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
+	if _is_upload(method, known) and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
 		return form_dict["method"]
 	return method
 
 
-def _is_upload(method) -> bool:
+def _is_upload(method, known) -> bool:
 	"""True when `method` names `frappe.handler.upload_file`, by name or as any alias that resolves to that function."""
 	if not method:
 		return False
 	if method in UPLOAD_METHODS:
 		return True
-	if method in action_map():
+	if method in known:
 		return False
 	return _resolve(method) is _handler().upload_file  # an alias such as `frappe.api.v2.upload_file`
 
@@ -74,6 +75,9 @@ def _handler():
 	return handler
 
 
+@functools.lru_cache(
+	maxsize=2048
+)  # a name is resolved once per process (the names a client sends are bounded by the cache)
 def _resolve(method: str):
 	"""The function a requested name stands for, as `frappe.handler.get_attr` finds it, or None.
 
@@ -132,5 +136,6 @@ def _routed_method(request) -> str | None:
 
 def action_of(request, form_dict) -> str | None:
 	"""The guarded action of a request, or None."""
-	method = requested_method(request, form_dict)
-	return action_map().get(method) if method else None
+	mapping = action_map()  # once per request
+	method = requested_method(request, form_dict, mapping)
+	return mapping.get(method) if method else None

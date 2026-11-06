@@ -4,11 +4,23 @@ Nothing here raises on a malformed value: a bad site config must never turn into
 the wrong type is ignored (and reported by name) and the defaults of the code apply.
 """
 
+import time
+
 import frappe
 
 from frappe_guard import policy
 
 SETTINGS = "Guard Settings"
+# `Guard Settings` is read from the database (two queries; Frappe's value cache lives for one request only), so a process keeps
+# the values for a short time: the hook of every guarded request would otherwise run two SQL queries. A change of the settings
+# reaches a process within this many seconds.
+SETTINGS_TTL = 30
+_memo: dict[str, tuple[float, tuple]] = {}
+
+
+def reset() -> None:
+	"""Forget the remembered settings (tests, and after a change that must show at once)."""
+	_memo.clear()
 
 
 def secret() -> str:
@@ -41,6 +53,18 @@ def _single(field: str):
 		return None
 
 
+def _settings() -> tuple:
+	"""(default_mode, action_overrides) of `Guard Settings`, remembered per site for `SETTINGS_TTL` seconds."""
+	site = str(getattr(frappe.local, "site", "") or "")
+	remembered = _memo.get(site)
+	now = time.monotonic()
+	if remembered and remembered[0] > now:
+		return remembered[1]
+	values = (_single("default_mode"), _single("action_overrides"))
+	_memo[site] = (now + SETTINGS_TTL, values)
+	return values
+
+
 def _site_layer() -> dict:
 	"""`guard_actions` of the site config as a fresh dict; `guard_mode` is the default mode of `*` that `guard_actions` can override."""
 	actions = frappe.conf.get("guard_actions")
@@ -60,9 +84,8 @@ def _site_layer() -> dict:
 
 def policy_for(action: str) -> policy.ActionPolicy:
 	"""The policy of an action: the code, `Guard Settings`, the site config (the last wins)."""
-	return policy.resolve(
-		action, _single("default_mode") or None, _single("action_overrides"), _site_layer(), warn_ignored
-	)
+	default_mode, overrides = _settings()
+	return policy.resolve(action, default_mode or None, overrides, _site_layer(), warn_ignored)
 
 
 def unconfigured_is_allowed() -> bool:
