@@ -113,7 +113,7 @@ that carry no secret are in the Single DocType `Guard Settings` (`default_mode`,
 | Site config key | Meaning |
 | --- | --- |
 | `guard_recaptcha_site_key`, `guard_recaptcha_secret` | the reCAPTCHA v3 key pair of the site (the secret is never logged) |
-| `guard_hosts` | the host names the tokens are accepted from (public, internal and staging names); a token of another host is refused; one list per key |
+| `guard_hosts` | the host names of THIS site the tokens are accepted from (its public and internal names, or its QA names); a token made on another host is refused. One reCAPTCHA key pair may serve many sites: the list of each site is what keeps a token of one site from passing on another |
 | `guard_mode` | the default mode of every action (`off`, `monitor`, `enforce`) |
 | `guard_actions` | `{action or "*": {"mode", "threshold", "fail", "provider_action"}}` |
 | `guard_action_map` | `{"dotted.method": "action"}`: the endpoints of a site |
