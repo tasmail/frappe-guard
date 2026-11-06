@@ -49,9 +49,11 @@ class RateResult:
 _BURST = Limit("ip", 60, 5, 20)
 _MAIL = (
 	Limit("ip", 3600, 10, 60),
-	Limit("account", 3600, 5, 20),
-	# a mail-bomb cap, not a quota of the legitimate owner: a victim must still be able to reset his password
-	Limit("recipient", 3600, 3, 20),
+	# Only the hard limit of `account` and `recipient` is active (soft = hard): they are counted after the CAPTCHA passed (or for
+	# a signed-in session, which has no CAPTCHA), so there is no score left to raise. A mail-bomb cap, not a quota of the owner
+	# of the address. Known residual risk: an attacker with valid tokens can use the cap up for a victim's address (an hour).
+	Limit("account", 3600, 20, 20),
+	Limit("recipient", 3600, 20, 20),
 	Limit("site", 3600, 200, 600),
 )
 _FORM = (Limit("ip", 3600, 20, 100), Limit("site", 3600, 300, 1000))
@@ -91,7 +93,10 @@ def limits_for(action: str) -> tuple[Limit, ...]:
 	raw = site.get(action) if isinstance(site, dict) else None
 	if not isinstance(raw, list):
 		return defaults
-	valid = tuple(limit for limit in map(_limit, raw) if limit)
+	by_window = {
+		(limit.kind, limit.window): limit for limit in map(_limit, raw) if limit
+	}  # a repeated (kind, window): the last
+	valid = tuple(by_window.values())
 	named = {limit.kind for limit in valid}
 	return tuple(limit for limit in defaults if limit.kind not in named) + valid
 
@@ -116,7 +121,12 @@ def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIN
 	try:
 		for limit in limits:
 			ident = identities.get(limit.kind)
-			if limit.kind not in kinds or not ident or ident == UNKNOWN:
+			if limit.kind not in kinds or not ident:
+				continue
+			if ident == UNKNOWN:
+				# no per-client counter is possible; count the requests of unknown clients (never refused) so that the
+				# loud log line of `clientip` is not the only signal that the proxy chain is not what is configured
+				hit(action, "unknown", SITE_IDENT, limit.window)
 				continue
 			count = hit(action, limit.kind, ident, limit.window)
 			level = Level.HARD if count > limit.hard else Level.SOFT if count > limit.soft else Level.OK

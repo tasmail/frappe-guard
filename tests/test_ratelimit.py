@@ -154,3 +154,24 @@ def test_a_plus_tag_does_not_make_a_new_recipient():
 	assert ratelimit.recipient("sign_up", {"email": "victim+x@example.com"}) == ratelimit.recipient(
 		"sign_up", {"email": "victim@example.com"}
 	)
+
+
+def test_the_soft_limits_of_account_and_recipient_equal_the_hard_ones_because_there_is_no_score_left_to_raise():
+	for action in ratelimit.RECIPIENT_FIELDS:
+		for limit in ratelimit.DEFAULT_LIMITS[action]:
+			if limit.kind in ("account", "recipient"):
+				assert limit.soft == limit.hard
+
+
+def test_a_repeated_kind_and_window_in_the_config_is_counted_once(frappe_stub):
+	row = {"kind": "ip", "window": 3600, "soft": 5, "hard": 9}
+	frappe_stub.conf["guard_limits"] = {"contact": [row, dict(row, soft=1, hard=2)]}
+	limits = [limit for limit in ratelimit.limits_for("contact") if limit.kind == "ip"]
+	assert limits == [Limit("ip", 3600, 1, 2)]  # the last one wins
+
+
+def test_unknown_clients_are_counted_per_action_and_window_without_a_limit(frappe_stub):
+	for _ in range(3):
+		ratelimit.check("contact", {"ip": "unknown", "site": "*"})
+	counts = {key: value for key, value in frappe_stub.cache.values.items() if b":unknown:" in key}
+	assert sorted(counts.values()) == [3, 3]  # the burst and the hourly window

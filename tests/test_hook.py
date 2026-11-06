@@ -12,7 +12,11 @@ SIGN_UP = "frappe.core.doctype.user.user.sign_up"
 
 @pytest.fixture
 def send(frappe_stub):
-	def go(path="/", method="POST", form=None, headers=None, user="Guest"):
+	def go(path="/", method="POST", form=None, headers=None, user="Guest", hops=1):
+		if hops is None:
+			frappe_stub.conf.pop("guard_trusted_hops", None)
+		else:
+			frappe_stub.conf["guard_trusted_hops"] = hops
 		headers = {"X-Forwarded-For": "203.0.113.7", **(headers or {})}  # the client behind one trusted proxy
 		frappe_stub.local.request = Request(
 			EnvironBuilder(path=path, method=method, headers=headers).get_environ()
@@ -260,3 +264,16 @@ def test_a_failing_settings_read_does_not_become_a_500(send, evaluated, frappe_s
 	frappe_stub.db.get_single_value = boom
 	send("/", form={"cmd": SIGN_UP})  # monitor by the code defaults
 	assert len(evaluated) == 1
+
+
+def test_without_a_configured_chain_unknown_clients_are_counted_never_refused_and_not_per_client(
+	send, evaluated, frappe_stub
+):
+	frappe_stub.conf["guard_mode"] = "enforce"
+	limits(frappe_stub, "sign_up", ("ip", 1, 1))
+	for _ in range(5):  # more than the ip hard limit: there is no per-client counter to refuse by
+		send("/", form={"cmd": SIGN_UP}, hops=None)
+	assert len(evaluated) == 5
+	assert not any(b":ip:" in key for key in frappe_stub.cache.values)
+	unknown = [value for key, value in frappe_stub.cache.values.items() if b":unknown:" in key]
+	assert unknown == [5]  # readable: how many requests came from clients the guard could not tell apart

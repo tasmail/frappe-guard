@@ -1,9 +1,9 @@
 """The address of the client behind the proxies of the platform, and what a counter identifies it by.
 
 `frappe.local.request_ip` is the left-most entry of `X-Forwarded-For` and is chosen by the client: nothing here uses it. The
-address is the N-th entry from the right of the configured header, N = the number of trusted hops (`guard_trusted_hops`, default
-1: the nginx in front of the bench appended the client; the real chain is settled by the reads of package P4). The entries to the
-left of the trusted ones are whatever the client sent and are never read.
+address is the N-th entry from the right of the configured header, N = the number of trusted hops (`guard_trusted_hops`, which
+has NO default: the real chain of the platform is read in package P4 and written to the site config by Press; until it is, every
+client is unknown). The entries to the left of the trusted ones are whatever the client sent and are never read.
 
 A request whose chain is shorter than N, or whose entry is not an address, has an UNKNOWN client: the address of the connection
 is the proxy, and bucketing every client on it would lock all of them out together. The counters skip an unknown address (the
@@ -18,14 +18,14 @@ import ipaddress
 import frappe
 
 DEFAULT_HEADER = "X-Forwarded-For"
-DEFAULT_HOPS = 1
 UNKNOWN = "unknown"
 _warned: set[str] = set()
 
 
-def _hops() -> int:
+def _hops() -> int | None:
+	"""The number of trusted proxies; None when it is not configured (the platform writes it, see package P4)."""
 	value = frappe.conf.get("guard_trusted_hops")
-	return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else DEFAULT_HOPS
+	return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
 
 
 def _strip_port(entry: str) -> str:
@@ -62,6 +62,10 @@ def client_ip(request) -> str:
 	lines = request.headers.getlist(header)  # every line of the header, not only the first
 	entries = [entry.strip() for line in lines for entry in line.split(",") if entry.strip()]
 	hops = _hops()
+	if hops is None:
+		# a hard gate: with no verified chain every client would share one bucket (or be taken for someone else)
+		_warn_once("guard_trusted_hops is not configured")
+		return UNKNOWN
 	if len(entries) < hops:
 		_warn_once(f"{header} has {len(entries)} entries, {hops} trusted hops are configured")
 		return UNKNOWN
@@ -74,5 +78,7 @@ def client_ip(request) -> str:
 
 def identifier(value: str) -> str:
 	"""What a counter key holds: a keyed hash (the site's encryption key), so no address or e-mail is readable in Redis."""
+	if not frappe.conf.get("encryption_key"):
+		_warn_once("encryption_key is not set: the hashes of the counters are not keyed")
 	key = str(frappe.conf.get("encryption_key") or "") + "|frappe_guard"
 	return hmac.new(key.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()[:32]

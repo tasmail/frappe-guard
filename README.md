@@ -40,7 +40,12 @@ is not counted), `account`, `recipient` (the address a mail goes to) and `site` 
 the score the CAPTCHA demands, a hard limit refuses. The `account` and `recipient` counters of a guest are counted after the CAPTCHA
 passed, so a request without a valid token cannot burn the counter of a victim's address; a request refused by a per-identity limit
 is not counted against the shared counters. `guard_limits` of the site config tunes them per action and kind.
-Notes: the cache Redis normally runs with `maxmemory` and an eviction policy, so a counter can reset under memory pressure; a hung
+`guard_trusted_hops` has **no default**: until the platform writes the verified proxy chain to the site config every client is
+*unknown*: not counted per client (a bucket of the proxy address would lock everyone out), the requests of unknown clients are
+counted per action (never refused) and a loud log line is written once per process. Only the hard limit of `account` and
+`recipient` is active (they are counted after the CAPTCHA, so there is no score left to raise). Known residual risk: an attacker
+with valid tokens can use up the recipient cap (20 an hour) of a victim's address and so block his password reset for the hour;
+no counter fixes that, the cap bounds the mail bomb instead. Notes: the cache Redis normally runs with `maxmemory` and an eviction policy, so a counter can reset under memory pressure; a hung
 Redis is not timed out by Frappe (`from_url` sets no socket timeout). Verify the proxy chain before using `enforce`.
 
 ## Reserved names

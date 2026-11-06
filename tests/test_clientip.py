@@ -5,6 +5,12 @@ from werkzeug.wrappers import Request
 from frappe_guard import clientip
 
 
+@pytest.fixture(autouse=True)
+def one_hop(frappe_stub):
+	frappe_stub.conf["guard_trusted_hops"] = 1  # the platform writes it; the default is "not configured"
+	clientip._warned.clear()
+
+
 def req(forwarded=None, remote="10.0.0.9", **headers):
 	builder = EnvironBuilder(headers=headers, environ_base={"REMOTE_ADDR": remote})
 	if forwarded is not None:
@@ -36,9 +42,10 @@ def test_a_chain_shorter_than_the_hops_or_no_header_is_unknown_not_the_proxy_add
 
 
 @pytest.mark.parametrize("value", [0, -1, True, "2", None, 1.5])
-def test_an_invalid_hop_count_is_one(frappe_stub, value):
+def test_without_a_valid_hop_count_every_client_is_unknown_and_it_is_logged(frappe_stub, value):
 	frappe_stub.conf["guard_trusted_hops"] = value
-	assert clientip.client_ip(req("6.6.6.6, 203.0.113.7")) == "203.0.113.7"
+	assert clientip.client_ip(req("6.6.6.6, 203.0.113.7")) == clientip.UNKNOWN
+	assert "guard_trusted_hops is not configured" in frappe_stub.log.lines[0]
 
 
 def test_the_header_name_is_configurable(frappe_stub):
