@@ -192,3 +192,14 @@ def test_a_dotless_name_is_resolved_like_the_shorthand_of_the_handler(frappe_stu
 	frappe_stub.handler.alias = frappe_stub.handler.upload_file
 	assert method_of("/x", {"cmd": "alias", "method": SIGN_UP}) == SIGN_UP
 	assert method_of("/x", {"cmd": "ping", "method": SIGN_UP}) == "ping"
+
+
+def test_the_default_map_is_registration_login_by_e_mail_password_reset_and_the_contact_form_only():
+	assert actions.DEFAULT_MAP == {
+		"frappe.core.doctype.user.user.sign_up": "sign_up",
+		"frappe.core.doctype.user.user.reset_password": "reset_password",
+		"frappe.www.login.send_login_link": "send_login_link",
+		"frappe.www.contact.send_message": "contact",
+	}
+	for name in ("fossdoc_shop.downloads.request_download", "fossdoc_shop.api.send_calculation"):
+		assert actions.action_of(request("/x"), {"cmd": name}) is None  # they keep the check of fossdoc_shop

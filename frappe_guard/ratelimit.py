@@ -62,8 +62,6 @@ DEFAULT_LIMITS = {
 	"reset_password": (_BURST, *_MAIL),
 	"send_login_link": (_BURST, *_MAIL),
 	"contact": (_BURST, *_FORM),
-	"download": (_BURST, *_FORM),
-	"calculation": (_BURST, *_FORM),
 }
 FALLBACK_LIMITS = (_BURST, *_FORM)
 # The per-identity counters come first, the site counter last: a request that a per-identity limit already refused is not
