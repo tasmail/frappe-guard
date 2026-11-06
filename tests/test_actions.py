@@ -144,17 +144,51 @@ def test_head_and_the_v2_prefix_with_cmd():
 	assert method_of("/api/v2/method/ping", {"cmd": SIGN_UP}) == SIGN_UP  # cmd wins, as in Frappe
 
 
-def test_an_alias_of_upload_file_is_found_by_identity(frappe_stub):
-	frappe_stub.attrs["frappe.api.v2.upload_file"] = frappe_stub.handler.upload_file
-	frappe_stub.attrs["some.other.function"] = lambda: None
-	for name in ("frappe.api.v2.upload_file", "frappe.handler.upload_file"):
+def test_an_alias_of_upload_file_is_found_by_identity(frappe_stub, monkeypatch):
+	import sys
+	import types
+
+	other = types.ModuleType("myapp.alias")
+	other.upload_file = frappe_stub.handler.upload_file  # a re-export by an app of the site
+	other.something = lambda: None
+	monkeypatch.setitem(sys.modules, "myapp", types.ModuleType("myapp"))
+	monkeypatch.setitem(sys.modules, "myapp.alias", other)
+	frappe_stub.get_installed_apps = lambda: ["frappe", "myapp"]
+	for name in ("frappe.api.v2.upload_file", "frappe.handler.upload_file", "myapp.alias.upload_file"):
 		assert method_of("/x", {"cmd": name, "method": SIGN_UP}) == SIGN_UP
 		assert method_of(f"/api/method/{name}", {"method": SIGN_UP}) == SIGN_UP
 		assert method_of(f"/api/v2/method/{name}", {"method": SIGN_UP}) == SIGN_UP
-	assert method_of("/x", {"cmd": "some.other.function", "method": SIGN_UP}) == "some.other.function"
+	for name in (
+		"myapp.alias.something",
+		"does.not.exist",
+		"myapp.nothing.there",
+		"frappe.handler.nothing",
+		"ping",
+	):
+		assert method_of("/x", {"cmd": name, "method": SIGN_UP}) == name
+
+
+def test_an_app_that_is_not_installed_is_not_imported(frappe_stub, monkeypatch):
+	import importlib
+
+	def never(name):
+		raise AssertionError("imported " + name)
+
+	monkeypatch.setattr(importlib, "import_module", never)
 	assert (
-		method_of("/x", {"cmd": "does.not.exist", "method": SIGN_UP}) == "does.not.exist"
-	)  # Frappe fails it
-	assert (
-		method_of("/x", {"cmd": SIGN_UP, "method": "other"}) == SIGN_UP
-	)  # a guarded name is not resolved at all
+		method_of("/x", {"cmd": "not_installed.module.function", "method": SIGN_UP})
+		== "not_installed.module.function"
+	)
+
+
+def test_a_guarded_name_is_not_resolved_at_all(frappe_stub, monkeypatch):
+	import importlib
+
+	monkeypatch.setattr(importlib, "import_module", lambda name: (_ for _ in ()).throw(AssertionError(name)))
+	assert method_of("/x", {"cmd": SIGN_UP, "method": "other"}) == SIGN_UP
+
+
+def test_a_dotless_name_is_resolved_like_the_shorthand_of_the_handler(frappe_stub):
+	frappe_stub.handler.alias = frappe_stub.handler.upload_file
+	assert method_of("/x", {"cmd": "alias", "method": SIGN_UP}) == SIGN_UP
+	assert method_of("/x", {"cmd": "ping", "method": SIGN_UP}) == "ping"

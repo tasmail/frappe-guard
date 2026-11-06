@@ -6,6 +6,8 @@ path and with any HTTP method) wins over the path; only when `cmd` is empty is t
 method cannot bypass the map. The name is matched as requested, before `override_whitelisted_methods`.
 """
 
+import importlib
+
 import frappe
 
 # The stock endpoints. A site adds its own in `guard_action_map` of the site config ({"dotted.method": "action"}); the sites of
@@ -20,6 +22,7 @@ DEFAULT_MAP = {
 }
 API_PREFIX = "/api/"
 # `upload_file` is open to guests and calls the method named in its `method` field: that name is the requested method then.
+# (`uploadfile`, the legacy name, never dispatches `method`: it is listed only to be conservative)
 UPLOAD_METHODS = {"upload_file", "frappe.handler.upload_file", "uploadfile"}
 
 
@@ -62,12 +65,30 @@ def _is_upload(method) -> bool:
 		return True
 	if method in action_map():
 		return False
-	try:
-		from frappe import handler
+	return _resolve(method) is _handler().upload_file  # an alias such as `frappe.api.v2.upload_file`
 
-		return frappe.get_attr(method) is handler.upload_file  # an alias such as `frappe.api.v2.upload_file`
+
+def _handler():
+	from frappe import handler
+
+	return handler
+
+
+def _resolve(method: str):
+	"""The function a requested name stands for, as `frappe.handler.get_attr` finds it, or None.
+
+	`frappe.get_attr` is not used: on a failure it throws and leaves a message in the response of a request that Frappe
+	answers fine (a dotless name such as `ping` or a server-script API).
+	"""
+	try:
+		if "." not in method:  # the deprecated shorthand: a name of the globals of `frappe.handler`
+			return getattr(_handler(), method, None)
+		path, name = method.rsplit(".", 1)
+		if path.split(".")[0] not in frappe.get_installed_apps():
+			return None
+		return getattr(importlib.import_module(path), name, None)
 	except Exception:  # noqa: BLE001  Frappe fails the same lookup and answers
-		return False
+		return None
 
 
 def _v2():

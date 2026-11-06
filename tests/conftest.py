@@ -83,16 +83,12 @@ def _make_frappe():
 	frappe.get_installed_apps = lambda: ["frappe", "frappe_guard"]
 	frappe.log = _Logger()
 	frappe.logger = lambda name=None: frappe.log
-	frappe.attrs = {}
 
-	def get_attr(name):
-		if name not in frappe.attrs:
-			raise AttributeError(name)
-		return frappe.attrs[name]
+	def get_attr(name):  # the guard must not use it: it throws and leaves a message in the response
+		raise AssertionError("frappe.get_attr is not for the hook")
 
 	frappe.get_attr = get_attr
 	handler = types.ModuleType("frappe.handler")
-	handler.upload_file = lambda: None
 	frappe.handler = handler
 	frappe.get_request_header = lambda name, default=None: frappe.headers.get(name, default)
 	model = types.ModuleType("frappe.model")
@@ -100,6 +96,7 @@ def _make_frappe():
 	document.Document = type("Document", (), {})
 	api = types.ModuleType("frappe.api")
 	api.API_URL_MAP, api.v1, api.v2 = _frappe_url_map()
+	handler.upload_file = api.v2.upload_file  # `frappe/api/v2.py` imports it from `frappe.handler`
 	modules = types.ModuleType("frappe.modules")
 	modules_utils = types.ModuleType("frappe.modules.utils")
 
@@ -116,6 +113,8 @@ def _make_frappe():
 			"frappe.model": model,
 			"frappe.model.document": document,
 			"frappe.api": api,
+			"frappe.api.v1": api.v1,
+			"frappe.api.v2": api.v2,
 			"frappe.modules": modules,
 			"frappe.modules.utils": modules_utils,
 		}
@@ -136,6 +135,5 @@ def frappe_stub():
 	FRAPPE.headers = {}
 	FRAPPE.session = types.SimpleNamespace(user="Guest")
 	FRAPPE.doctype_modules = {}
-	FRAPPE.attrs = {"frappe.handler.upload_file": FRAPPE.handler.upload_file}
 	FRAPPE.log.lines.clear()
 	return FRAPPE
