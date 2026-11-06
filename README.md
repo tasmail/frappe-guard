@@ -91,7 +91,8 @@ the staff, a WAF, and the edge limit of the proxy (which stays and is extended o
 
 ## Modes
 
-Every action has a mode: `off` (nothing is checked or counted), `monitor` (checked, counted and logged, **never refused**) or
+Every action has a mode: `off` (nothing is checked or counted), `monitor` (checked, counted and logged, **never refused**; only
+what did not pass is logged) or
 `enforce` (a failed check or a hard limit is refused with a validation error, HTTP 417, with one of three messages: the check
 failed, the check is not available, the check is not configured; or "too many requests"). The default mode is `monitor`; the
 rollout plan keeps a site there for at least a week. `enforce` is switched per action in the site config, without a deploy. Only
@@ -115,22 +116,24 @@ that carry no secret are in the Single DocType `Guard Settings` (`default_mode`,
 | `guard_trusted_hops` | the number of trusted proxies; **no default**: until the platform writes the verified value every client is *unknown* (see Rate limit) |
 | `guard_ip_header` | the header that carries the client address, default `X-Forwarded-For` |
 
-A site without a secret or host list is *not configured*: it refuses the guarded actions in `enforce` (and passes them in
-`monitor`, in developer mode and in tests), so a missing key never opens a form silently.
+A site without a secret or host list is *not configured*: it refuses the guarded actions in `enforce`, and passes them in
+`monitor`, in developer mode and in tests, **without logging anything** (check the keys before the rollout week, the log will not
+tell you). A missing key never opens a form in `enforce`.
 
 ## Why it is built this way
 
 - **reCAPTCHA v3 first**: the same provider as the code it replaces, no visible challenge. The score is compared with a threshold **per action**; a score of
   0 is honoured; the host in Google's reply must be in `guard_hosts`; `remoteip` is not sent (behind a proxy it is the proxy);
-  the action in the reply must be the expected one. A token is single use.
+  the action in the reply must be the expected one. Google rejects a reused token.
 - **Counters do not trust the client.** The address is the N-th entry from the right of `X-Forwarded-For` (N trusted proxies);
-  what the client puts on the left is never read. A chain that is not what the configuration says gives an *unknown* client, which
-  is logged loudly and not counted (bucketing everyone on the proxy address would lock everyone out together).
+  what the client puts on the left is never read. A chain that is not what the configuration says gives an *unknown* client: logged loudly,
+  not counted per client (bucketing everyone on the proxy address would lock everyone out together) and counted in a per-action
+  `unknown` counter that never refuses.
 - **A soft limit asks for more, a hard limit refuses.** Above a soft limit the score that the CAPTCHA demands rises (a shared
-  NAT, an office, is not locked out); a hard limit is a flood guard. A refused request is not counted against the shared counters,
-  and a guest's recipient counter is counted only after the CAPTCHA passed, so nobody can burn the counter of a victim's address
+  NAT, an office, is not locked out); a hard limit is a flood guard. A request refused by the address or account hard limit does not feed the
+  site counter, and a guest's recipient counter is counted only after the CAPTCHA passed, so nobody can burn the counter of a victim's address
   without a valid token.
-- **An error of the guard never becomes a 500.** The hook passes through every request of the site. If it cannot tell which method
+- **An error of the check, the map or the counters never becomes a 500.** The hook passes through every request of the site. If it cannot tell which method
   a request is, the request passes and the error is logged with its traceback (a bug of the map must not take the site down). If
   the check itself fails, the fail policy of the action decides; if even the configuration cannot be read, the check runs in
   `monitor`: the request passes and the error is logged.
@@ -138,6 +141,40 @@ A site without a secret or host list is *not configured*: it refuses the guarded
   such key the hash is unkeyed and a guessable e-mail could be recovered from a Redis dump: a warning is logged), and expire with
   their window; no address or e-mail is stored in Redis in readable form. The log lines hold the action, the outcome and the
   score, never a token, a secret or an address.
+
+## Rollout
+
+The default mode is `monitor`: nothing is refused. To enforce one action, in the site config:
+
+```json
+{"guard_recaptcha_site_key": "...", "guard_recaptcha_secret": "...", "guard_hosts": ["www.example.com"],
+ "guard_trusted_hops": 1, "guard_actions": {"contact": {"mode": "enforce"}}}
+```
+
+To go back, set the mode to `monitor` or `off` (the site config, no deploy; a process picks the Single DocType up within 30
+seconds). The threshold is 0.5 per action (`guard_actions: {"contact": {"threshold": 0.7}}`); above a soft limit it is raised by
+0.2, at most to 1.0. The `action` that the browser passes to `FrappeGuard.request` is the action of the reCAPTCHA token and must
+equal the action name above (or `provider_action` if set): a token made for another action is refused (`action_mismatch`). The
+call to Google has a 3 second timeout. A refusal is HTTP 417 with one of: "The check of the form failed. Reload the page and try
+again.", "The check of the form is not available now. Try again later.", "The check of the form is not configured" or "Too many
+requests. Try again later." A line of the log (`frappe_guard` logger): `action=sign_up outcome=low_score mode=monitor allow=True score=0.1`;
+a soft limit is not logged, a hard limit and a failed check are.
+
+## Performance
+
+The hook runs on every request of a site, so its cost is pinned by tests (`tests/test_performance.py`), not only measured:
+
+- A request that is not guarded (a page, `/api/resource`, any other method): **no Redis, no database query, no call to the
+  provider**. The Python cost with a stub of Frappe (`scripts/bench_hook.py`): about 1 microsecond for a page, about 20 for an `/api`
+  call (the router match), about 2 for a `cmd` call.
+- A guarded request: **one round trip to Redis per counter phase** (all the counters of a phase in one MULTI/EXEC), so one for a
+  form, two for a guest's `sign_up` (the second after the CAPTCHA), one for a signed-in session; about 60 to 80 microseconds of
+  Python on top, plus the round trips. A refused request costs at most one more round trip to give the counts back.
+- `Guard Settings` is read from the database once per process per 30 seconds, not per request (Frappe's own value cache lives for one
+  request only).
+- The only slow step is the call to Google for a **guest's guarded request** (a form, a sign-up): up to 3 seconds, on the worker that
+  serves the request. The counters of address and site run **before** it, so a flood is refused without calling Google.
+- A hung Redis delays the requests of the guarded actions (the guard sets no timeout), a Redis that is down follows the fail policy.
 
 ## Rate limit
 
@@ -159,14 +196,19 @@ the request is refused (in `enforce`). Defaults (`ratelimit.py`; `guard_limits` 
 
 `ip` has two limits (the burst and the hourly one); naming `ip` in `guard_limits` replaces both. The `account` and `recipient`
 counters are counted after the CAPTCHA passed (for a guest), so there is no score left to raise: only their hard limit is active.
-The kinds are counted in the order address, account, recipient, site, and after the first hard limit nothing more is counted: a
-refused request does not feed the shared counters (one address cannot use up the site counter for everyone).
+Signed in: address, account, recipient and site are counted (in that order); a guest: address and site, then, after the CAPTCHA
+passed, the recipient. After the first hard limit nothing more is counted (the counts are given back): a request refused by the
+address or account limit does not feed the site counter (one address cannot use up the site counter for everyone). A request
+refused for its CAPTCHA, or for the recipient cap, has already been counted by address and site.
 
 **The address.** It is the N-th entry from the right of `X-Forwarded-For` (N = `guard_trusted_hops`); what the client puts on the
 left is never read. `guard_trusted_hops` has **no default**: the proxy chain of the platform must be read and written to the site
 config first (package P4). Until then, or when the chain is shorter than configured, the client is *unknown*: it is not counted
-per client (a bucket of the proxy address would lock everyone out), the requests of unknown clients are counted per action
-(never refused, so the number can be read) and a loud log line is written once per process. Do not use `enforce` before the
+per client (a bucket of the proxy address would lock everyone out), the requests of unknown clients are counted per action under
+`unknown` (that counter never refuses, so the number can be read) and a loud log line is written once per process. While
+`guard_trusted_hops` is unset there is no per-client limit at all, and the `site` limit only raises the score for unknown clients,
+never refuses (one client must not be able to lock everyone out); the CAPTCHA and the recipient and account caps stay. The address
+of an IPv6 client is its /64, an IPv4-mapped address is its IPv4 address, ports are stripped. Do not use `enforce` before the
 chain is verified.
 
 **Known residual risk.** An attacker with valid tokens can use up the recipient cap (20 an hour) of a victim's address and so
