@@ -3,8 +3,8 @@
 CAPTCHA and rate limit for the public forms and the guest endpoints of Frappe v15 sites (contact forms, sign-up, password reset,
 e-mail login link, downloads).
 
-Status: **under construction, nothing is released.** Merged: the skeleton, the check core and the request hook. In review (this
-README describes them as they will be once they are merged): the rate limiter and the browser script. Not built yet: protection of the password `login` (it needs its own mechanism, see below;
+Status: **under construction, nothing is released.** Merged: the skeleton, the check core, the request hook, the rate limiter and
+the browser script (none of it is installed on a site yet). Not built yet: protection of the password `login` (it needs its own mechanism, see below;
 **`login` is not protected today**), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the
 migration of the code that lives in `fossdoc_shop`. It is not installed on any site yet.
 The plan, the decisions and the work packages are in `docs/guard/plan.md` of the infrastructure repository `tasmail/erpnext-infra`.

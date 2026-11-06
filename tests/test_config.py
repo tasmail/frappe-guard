@@ -12,6 +12,7 @@ def test_the_keys_and_hosts_come_from_the_site_config(frappe_stub):
 
 def test_the_policy_layers_settings_then_site_config(frappe_stub):
 	assert config.policy_for("contact").mode == MONITOR
+	config.reset()  # the settings are remembered for a short time: the first read above
 	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
 	frappe_stub.db.singles[("Guard Settings", "action_overrides")] = '{"contact": {"threshold": 0.3}}'
 	policy = config.policy_for("contact")
@@ -89,3 +90,65 @@ def test_a_provider_action_override_works_with_a_star_layer(frappe_stub):
 	}
 	policy = config.policy_for("contact")
 	assert (policy.provider_action, policy.threshold) == ("contact_form", 0.8)
+
+
+def test_the_settings_are_read_from_the_database_once_per_ttl_not_per_request(frappe_stub, monkeypatch):
+	reads = []
+	real = frappe_stub.db.get_single_value
+
+	def counted(doctype, field):
+		reads.append(field)
+		return real(doctype, field)
+
+	frappe_stub.db.get_single_value = counted
+	for _ in range(50):
+		config.policy_for("contact")
+	assert reads == ["default_mode", "action_overrides"]  # two queries for fifty requests
+	clock = {"t": 0.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	config.reset()
+	config.policy_for("contact")
+	clock["t"] += config.SETTINGS_TTL + 1
+	config.policy_for("contact")
+	assert len(reads) == 2 + 2 + 2  # read again after the TTL
+
+
+def test_a_change_of_the_settings_reaches_the_process_after_the_ttl(frappe_stub, monkeypatch):
+	clock = {"t": 100.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	assert config.policy_for("contact").mode == MONITOR
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
+	assert config.policy_for("contact").mode == MONITOR  # still the remembered value
+	clock["t"] += config.SETTINGS_TTL + 1
+	assert config.policy_for("contact").mode == ENFORCE
+
+
+def test_a_transient_failure_keeps_the_last_good_settings_and_is_retried_soon(frappe_stub, monkeypatch):
+	clock = {"t": 0.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
+	assert config.policy_for("contact").mode == ENFORCE
+	real = frappe_stub.db.get_single_value
+
+	def boom(doctype, field):
+		raise RuntimeError("MySQL server has gone away")
+
+	frappe_stub.db.get_single_value = boom
+	clock["t"] += config.SETTINGS_TTL + 1
+	assert config.policy_for("contact").mode == ENFORCE  # not silently reverted to monitor
+	frappe_stub.db.get_single_value = real
+	clock["t"] += config.FAILURE_TTL + 1  # retried after a few seconds, not after 30
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "off"
+	assert config.policy_for("contact").mode == "off"
+
+
+def test_a_failure_with_no_good_value_uses_the_code_defaults_and_retries_soon(frappe_stub, monkeypatch):
+	clock = {"t": 0.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	real = frappe_stub.db.get_single_value
+	frappe_stub.db.get_single_value = lambda doctype, field: (_ for _ in ()).throw(RuntimeError("down"))
+	assert config.policy_for("contact").mode == MONITOR
+	frappe_stub.db.get_single_value = real
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
+	clock["t"] += config.FAILURE_TTL + 1
+	assert config.policy_for("contact").mode == ENFORCE
