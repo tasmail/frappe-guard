@@ -8,4 +8,5 @@ app_email = "foss@foss.ua"
 app_license = "mit"
 
 after_install = ["frappe_guard.install.after_install"]
+auth_hooks = ["frappe_guard.hook.guard_request"]
 required_apps = ["frappe"]

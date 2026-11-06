@@ -26,6 +26,37 @@ class _Db:
 		return self.singles.get((doctype, field))
 
 
+def _frappe_url_map():
+	"""The routing of `frappe/api/__init__.py` (v15) with the same mounts and options and stand-in endpoints."""
+	from werkzeug.routing import Map, Rule, Submount
+
+	def handle_rpc_call(**kw):  # v1 and v2 name their endpoint like this
+		return "rpc"
+
+	def other(**kw):
+		return "other"
+
+	v1 = [
+		Rule("/method/<path:method>", endpoint=handle_rpc_call),
+		Rule("/resource/<doctype>", methods=["GET"], endpoint=other),
+		Rule("/resource/<doctype>/<path:name>/", methods=["GET"], endpoint=other),
+	]
+	v2 = [
+		Rule("/method/login", endpoint=other),
+		Rule("/method/logout", endpoint=other),
+		Rule("/method/ping", endpoint=other),
+		Rule("/method/upload_file", endpoint=other),
+		Rule("/method/<method>", endpoint=handle_rpc_call),
+		Rule("/method/<doctype>/<method>", endpoint=handle_rpc_call),
+		Rule("/document/<doctype>", methods=["GET"], endpoint=other),
+	]
+	return Map(
+		[Submount("/api", v1), Submount("/api/v1", v1), Submount("/api/v2", v2)],
+		strict_slashes=False,
+		merge_slashes=False,
+	)
+
+
 def _make_frappe():
 	frappe = types.ModuleType("frappe")
 	frappe.ValidationError = type("ValidationError", (Exception,), {})
@@ -38,10 +69,31 @@ def _make_frappe():
 	frappe.get_installed_apps = lambda: ["frappe", "frappe_guard"]
 	frappe.log = _Logger()
 	frappe.logger = lambda name=None: frappe.log
+	frappe.get_request_header = lambda name, default=None: frappe.headers.get(name, default)
 	model = types.ModuleType("frappe.model")
 	document = types.ModuleType("frappe.model.document")
 	document.Document = type("Document", (), {})
-	sys.modules.update({"frappe": frappe, "frappe.model": model, "frappe.model.document": document})
+	api = types.ModuleType("frappe.api")
+	api.API_URL_MAP = _frappe_url_map()
+	modules = types.ModuleType("frappe.modules")
+	modules_utils = types.ModuleType("frappe.modules.utils")
+
+	def load_doctype_module(doctype):
+		if doctype not in frappe.doctype_modules:
+			raise ImportError(doctype)
+		return types.SimpleNamespace(__name__=frappe.doctype_modules[doctype])
+
+	modules_utils.load_doctype_module = load_doctype_module
+	sys.modules.update(
+		{
+			"frappe": frappe,
+			"frappe.model": model,
+			"frappe.model.document": document,
+			"frappe.api": api,
+			"frappe.modules": modules,
+			"frappe.modules.utils": modules_utils,
+		}
+	)
 	return frappe
 
 
@@ -54,5 +106,9 @@ def frappe_stub():
 	FRAPPE.conf = FRAPPE.local.conf
 	FRAPPE.flags = types.SimpleNamespace(in_test=False)
 	FRAPPE.db = _Db()
+	FRAPPE.form_dict = {}
+	FRAPPE.headers = {}
+	FRAPPE.session = types.SimpleNamespace(user="Guest")
+	FRAPPE.doctype_modules = {}
 	FRAPPE.log.lines.clear()
 	return FRAPPE
