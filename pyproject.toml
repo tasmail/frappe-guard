@@ -26,3 +26,11 @@ indent-style = "tab"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["frappe_guard"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install ruff pytest tomli
+      - run: pip install ruff pytest pytest-cov tomli
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest
+      - run: pytest --cov --cov-report=term-missing
