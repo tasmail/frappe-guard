@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install ruff==0.17.3 pytest==9.2.0 pytest-cov==7.1.0 tomli
+      - run: pip install requests==2.34.2 ruff==0.17.3 pytest==9.2.0 pytest-cov==7.1.0 tomli
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest --cov --cov-report=term-missing
