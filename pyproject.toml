@@ -1,0 +1,28 @@
+[project]
+name = "frappe_guard"
+authors = [{ name = "FOSS-On-Line", email = "foss@foss.ua" }]
+description = "CAPTCHA and rate limit for the public forms and the sign-up/login endpoints of Frappe sites"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { file = "LICENSE" }
+dynamic = ["version"]
+dependencies = []
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+# Declared for bench, not as a pip dependency: pip could resolve the wrong `frappe` package from PyPI.
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0,<16.0.0"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.format]
+indent-style = "tab"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

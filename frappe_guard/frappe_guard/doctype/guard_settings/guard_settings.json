@@ -1,0 +1,47 @@
+{
+ "actions": [],
+ "creation": "2026-11-06 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "default_mode",
+  "action_overrides"
+ ],
+ "fields": [
+  {
+   "default": "monitor",
+   "description": "off: nothing is checked. monitor: checked and logged, never blocked. enforce: a failed check is refused.",
+   "fieldname": "default_mode",
+   "fieldtype": "Select",
+   "label": "Default mode",
+   "options": "off\nmonitor\nenforce",
+   "reqd": 1
+  },
+  {
+   "description": "JSON: per action mode, threshold and fail policy. Never put a key or a secret here.",
+   "fieldname": "action_overrides",
+   "fieldtype": "Code",
+   "label": "Action overrides",
+   "options": "JSON"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-11-06 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Guard",
+ "name": "Guard Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
