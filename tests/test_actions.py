@@ -96,7 +96,7 @@ def test_the_login_action_is_not_mapped_here():
 
 
 def test_a_matched_rpc_rule_without_a_string_method_gives_none(monkeypatch):
-	import frappe.api
+	import sys
 
 	def handle_rpc_call():
 		pass
@@ -109,5 +109,5 @@ def test_a_matched_rpc_rule_without_a_string_method_gives_none(monkeypatch):
 		def bind_to_environ(self, environ):
 			return Bound()
 
-	monkeypatch.setattr(frappe.api, "API_URL_MAP", Map())
+	monkeypatch.setattr(sys.modules["frappe.api"], "API_URL_MAP", Map())
 	assert method_of("/api/method/x") is None
