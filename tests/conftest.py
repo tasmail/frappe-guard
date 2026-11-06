@@ -178,4 +178,5 @@ def frappe_stub():
 	FRAPPE.session = types.SimpleNamespace(user="Guest")
 	FRAPPE.doctype_modules = {}
 	FRAPPE.log.lines.clear()
+	sys.modules["frappe_guard.clientip"]._warned.clear() if "frappe_guard.clientip" in sys.modules else None
 	return FRAPPE

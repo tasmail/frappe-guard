@@ -114,7 +114,9 @@ def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIN
 	"""Count the request against the limits of the given kinds and return the worst level.
 
 	The kinds are counted in the order of `KIND_ORDER`; after the first hard limit nothing more is counted, so a refused request
-	does not feed the shared counters. An identity that is missing or unknown (see `clientip`) is not counted.
+	does not feed the shared counters. A missing identity is not counted; an unknown client address (see `clientip`) is counted
+	per action and window under the kind `unknown` (never refused), and then the site limit can only raise the score, not
+	refuse (one client with no address of its own must not be able to lock everyone out).
 	"""
 	worst = RateResult()
 	limits = sorted(limits_for(action), key=lambda limit: KIND_ORDER.index(limit.kind))
@@ -130,6 +132,9 @@ def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIN
 				continue
 			count = hit(action, limit.kind, ident, limit.window)
 			level = Level.HARD if count > limit.hard else Level.SOFT if count > limit.soft else Level.OK
+			if limit.kind == "site" and identities.get("ip") == UNKNOWN:
+				# with no per-client counter one client could use the site limit up and refuse everyone: it only raises the score
+				level = min(level, Level.SOFT)
 			if level > worst.level:
 				worst = RateResult(level, limit.kind)
 			if worst.level == Level.HARD:

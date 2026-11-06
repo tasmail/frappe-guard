@@ -175,3 +175,33 @@ def test_unknown_clients_are_counted_per_action_and_window_without_a_limit(frapp
 		ratelimit.check("contact", {"ip": "unknown", "site": "*"})
 	counts = {key: value for key, value in frappe_stub.cache.values.items() if b":unknown:" in key}
 	assert sorted(counts.values()) == [3, 3]  # the burst and the hourly window
+
+
+def test_with_an_unknown_client_the_site_limit_can_only_raise_the_score_never_refuse(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"sign_up": [{"kind": "site", "window": 3600, "soft": 1, "hard": 2}]}
+	results = [ratelimit.check("sign_up", {"ip": "unknown", "site": "*"}) for _ in range(6)]
+	assert [r.level for r in results] == [
+		Level.OK,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+	]
+	# a known client is refused by the same limit
+	assert [ratelimit.check("sign_up", {"ip": "1.2.3.4", "site": "*"}).level for _ in range(3)][
+		-1
+	] == Level.HARD
+
+
+def test_a_failing_logger_does_not_become_an_outage_of_the_counters(frappe_stub, monkeypatch):
+	from frappe_guard import clientip
+
+	def boom(name=None):
+		raise RuntimeError("log")
+
+	clientip._warned.clear()
+	monkeypatch.setattr(frappe_stub, "logger", boom)
+	assert clientip.identifier(
+		"x"
+	)  # warns about the missing encryption_key; the logger raises; nothing escapes

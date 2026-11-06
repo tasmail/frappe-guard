@@ -6,9 +6,10 @@ has NO default: the real chain of the platform is read in package P4 and written
 client is unknown). The entries to the left of the trusted ones are whatever the client sent and are never read.
 
 A request whose chain is shorter than N, or whose entry is not an address, has an UNKNOWN client: the address of the connection
-is the proxy, and bucketing every client on it would lock all of them out together. The counters skip an unknown address (the
-site counter still protects), and the first such request of a process is logged loudly: it means the chain is not what the
-configuration says.
+is the proxy, and bucketing every client on it would lock all of them out together. The counters do not count it per
+client; they count the requests of unknown clients per action (never refused), the site limit can then only raise the score (one
+client must not be able to lock everyone out) and the first such request of a process is logged loudly: it means the chain is
+not what the configuration says.
 """
 
 import hashlib
@@ -53,7 +54,10 @@ def _normal(entry: str) -> str | None:
 def _warn_once(reason: str) -> None:
 	if reason not in _warned:
 		_warned.add(reason)
-		frappe.logger("frappe_guard").error("the client address cannot be told: %s", reason)
+		try:
+			frappe.logger("frappe_guard").error("the client address cannot be told: %s", reason)
+		except Exception:  # noqa: BLE001, S110  a failing logger must not become an outage of the counters
+			pass
 
 
 def client_ip(request) -> str:
