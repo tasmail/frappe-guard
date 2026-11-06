@@ -27,6 +27,7 @@ class Outcome(str, Enum):
 	ACTION_MISMATCH = "action_mismatch"
 	NOT_CONFIGURED = "not_configured"
 	OFF = "off"
+	RATE_LIMITED = "rate_limited"
 
 
 @dataclass(frozen=True)

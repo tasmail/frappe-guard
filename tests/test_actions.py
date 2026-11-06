@@ -12,7 +12,7 @@ def request(path, method="POST", query=""):
 
 
 def method_of(path, form=None, http="POST"):
-	return actions.requested_method(request(path, http), {} if form is None else form)
+	return actions.requested_method(request(path, http), {} if form is None else form, actions.action_map())
 
 
 @pytest.mark.parametrize(
