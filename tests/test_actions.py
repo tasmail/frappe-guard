@@ -142,3 +142,19 @@ def test_an_empty_cmd_falls_through_to_the_router_as_in_frappe():
 def test_head_and_the_v2_prefix_with_cmd():
 	assert method_of(f"/api/method/{SIGN_UP}", http="HEAD") == SIGN_UP
 	assert method_of("/api/v2/method/ping", {"cmd": SIGN_UP}) == SIGN_UP  # cmd wins, as in Frappe
+
+
+def test_an_alias_of_upload_file_is_found_by_identity(frappe_stub):
+	frappe_stub.attrs["frappe.api.v2.upload_file"] = frappe_stub.handler.upload_file
+	frappe_stub.attrs["some.other.function"] = lambda: None
+	for name in ("frappe.api.v2.upload_file", "frappe.handler.upload_file"):
+		assert method_of("/x", {"cmd": name, "method": SIGN_UP}) == SIGN_UP
+		assert method_of(f"/api/method/{name}", {"method": SIGN_UP}) == SIGN_UP
+		assert method_of(f"/api/v2/method/{name}", {"method": SIGN_UP}) == SIGN_UP
+	assert method_of("/x", {"cmd": "some.other.function", "method": SIGN_UP}) == "some.other.function"
+	assert (
+		method_of("/x", {"cmd": "does.not.exist", "method": SIGN_UP}) == "does.not.exist"
+	)  # Frappe fails it
+	assert (
+		method_of("/x", {"cmd": SIGN_UP, "method": "other"}) == SIGN_UP
+	)  # a guarded name is not resolved at all

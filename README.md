@@ -31,3 +31,8 @@ a bench (`pytest`); the integration tests need a site and Redis. See `AGENTS.md`
 ## Licence
 
 MIT. The idea of the modes and the fail policy comes from reviewing `frappe-contact-form`; no code of it is copied.
+
+## Reserved names
+
+`guard_token` (a form field) and `X-Guard-Token` (a header) carry the CAPTCHA token; the guard removes the field from every
+request before the endpoint sees it, so an endpoint must not use a parameter of that name.

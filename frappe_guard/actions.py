@@ -49,9 +49,25 @@ def requested_method(request, form_dict) -> str | None:
 		method = _routed_method(request)
 	else:
 		return None
-	if method in UPLOAD_METHODS and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
+	if _is_upload(method) and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
 		return form_dict["method"]
 	return method
+
+
+def _is_upload(method) -> bool:
+	"""True when `method` names `frappe.handler.upload_file`, by name or as any alias that resolves to that function."""
+	if not method:
+		return False
+	if method in UPLOAD_METHODS:
+		return True
+	if method in action_map():
+		return False
+	try:
+		from frappe import handler
+
+		return frappe.get_attr(method) is handler.upload_file  # an alias such as `frappe.api.v2.upload_file`
+	except Exception:  # noqa: BLE001  Frappe fails the same lookup and answers
+		return False
 
 
 def _v2():
@@ -73,9 +89,8 @@ def _routed_method(request) -> str | None:
 		endpoint, arguments = API_URL_MAP.bind_to_environ(request.environ).match()
 	except Exception:  # noqa: BLE001  NotFound, MethodNotAllowed, RequestRedirect: Frappe answers these itself
 		return None
-	if (
-		endpoint is _v2().upload_file
-	):  # the static v2 rule `/method/upload_file`: it calls the method of its `method` field
+	# the static v2 rule `/method/upload_file`: it calls the method of its `method` field
+	if endpoint is _v2().upload_file:
 		return "upload_file"
 	if endpoint not in _rpc_endpoints():  # by identity: a renamed or foreign endpoint must not match by name
 		return None

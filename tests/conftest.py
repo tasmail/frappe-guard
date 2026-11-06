@@ -83,6 +83,17 @@ def _make_frappe():
 	frappe.get_installed_apps = lambda: ["frappe", "frappe_guard"]
 	frappe.log = _Logger()
 	frappe.logger = lambda name=None: frappe.log
+	frappe.attrs = {}
+
+	def get_attr(name):
+		if name not in frappe.attrs:
+			raise AttributeError(name)
+		return frappe.attrs[name]
+
+	frappe.get_attr = get_attr
+	handler = types.ModuleType("frappe.handler")
+	handler.upload_file = lambda: None
+	frappe.handler = handler
 	frappe.get_request_header = lambda name, default=None: frappe.headers.get(name, default)
 	model = types.ModuleType("frappe.model")
 	document = types.ModuleType("frappe.model.document")
@@ -101,6 +112,7 @@ def _make_frappe():
 	sys.modules.update(
 		{
 			"frappe": frappe,
+			"frappe.handler": handler,
 			"frappe.model": model,
 			"frappe.model.document": document,
 			"frappe.api": api,
@@ -124,5 +136,6 @@ def frappe_stub():
 	FRAPPE.headers = {}
 	FRAPPE.session = types.SimpleNamespace(user="Guest")
 	FRAPPE.doctype_modules = {}
+	FRAPPE.attrs = {"frappe.handler.upload_file": FRAPPE.handler.upload_file}
 	FRAPPE.log.lines.clear()
 	return FRAPPE
