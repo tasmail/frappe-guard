@@ -8,10 +8,18 @@ VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 TIMEOUT = 5
 
 
+# A wrong or revoked secret is a fault of the configuration, not of the token.
+SECRET_ERRORS = {"invalid-input-secret", "missing-input-secret"}
+
+
+def _host(name) -> str:
+	return name.strip().lower().rstrip(".") if isinstance(name, str) else ""
+
+
 class RecaptchaV3:
 	def __init__(self, secret: str, hosts, post=requests.post, timeout: float = TIMEOUT):
 		self.secret = secret
-		self.hosts = {host.strip().lower() for host in hosts if host and host.strip()}
+		self.hosts = {_host(host) for host in hosts if isinstance(host, str) and _host(host)}
 		self.post = post
 		self.timeout = timeout
 
@@ -28,11 +36,14 @@ class RecaptchaV3:
 			return Verdict(Outcome.PROVIDER_ERROR)
 		score = reply.get("score")
 		score = score if isinstance(score, (int, float)) and not isinstance(score, bool) else 0
-		if not reply.get("success"):
-			return Verdict(Outcome.MISSING, score)  # invalid, expired or already used token
+		if reply.get("success") is not True:
+			codes = reply.get("error-codes")
+			if isinstance(codes, list) and SECRET_ERRORS & set(map(str, codes)):
+				return Verdict(Outcome.NOT_CONFIGURED)
+			return Verdict(Outcome.INVALID_TOKEN, score)  # invalid, expired or already used token
 		if reply.get("action") != expected_action:
 			return Verdict(Outcome.ACTION_MISMATCH, score)
-		if (reply.get("hostname") or "").lower() not in self.hosts:
+		if _host(reply.get("hostname")) not in self.hosts:
 			return Verdict(Outcome.HOST_MISMATCH, score)
 		if score < threshold:
 			return Verdict(Outcome.LOW_SCORE, score)

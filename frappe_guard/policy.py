@@ -20,7 +20,8 @@ DEFAULT_THRESHOLD = 0.5
 class Outcome(str, Enum):
 	PASS = "pass"
 	LOW_SCORE = "low_score"
-	MISSING = "missing"
+	MISSING = "missing"  # no token in the request
+	INVALID_TOKEN = "invalid_token"  # the provider refused the token (invalid, expired or already used)
 	PROVIDER_ERROR = "provider_error"
 	HOST_MISMATCH = "host_mismatch"
 	ACTION_MISMATCH = "action_mismatch"
@@ -85,11 +86,16 @@ def _valid(field: str, value) -> bool:
 	return False
 
 
-def _apply(policy: ActionPolicy, layer) -> ActionPolicy:
-	"""A layer is a dict of the fields to change; an invalid value is ignored, never trusted."""
+def _apply(policy: ActionPolicy, layer, warn=None) -> ActionPolicy:
+	"""A layer is a dict of the fields to change; an invalid value is ignored, never trusted, and reported by `warn`."""
 	if not isinstance(layer, dict):
 		return policy
-	changes = {field: value for field, value in layer.items() if _valid(field, value)}
+	changes = {}
+	for field, value in layer.items():
+		if _valid(field, value):
+			changes[field] = value
+		elif warn:
+			warn(policy.name, str(field))  # the field name only, never the value
 	return replace(policy, **changes)
 
 
@@ -105,15 +111,15 @@ def parse_overrides(raw) -> dict:
 
 
 def resolve(
-	action: str, default_mode: str | None = None, settings_overrides=None, site_overrides=None
+	action: str, default_mode: str | None = None, settings_overrides=None, site_overrides=None, warn=None
 ) -> ActionPolicy:
 	"""The policy of an action: the defaults, then `Guard Settings`, then the site config (the last wins)."""
 	policy = DEFAULTS.get(action) or _action(action)
 	if default_mode in MODES:
 		policy = replace(policy, mode=default_mode)
 	for layer in (parse_overrides(settings_overrides), parse_overrides(site_overrides)):
-		policy = _apply(policy, layer.get("*"))
-		policy = _apply(policy, layer.get(action))
+		policy = _apply(policy, layer.get("*"), warn)
+		policy = _apply(policy, layer.get(action), warn)
 	return policy
 
 
