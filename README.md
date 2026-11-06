@@ -5,7 +5,7 @@ CAPTCHA and rate limit for the public forms and the sign-up/login endpoints of F
 Status: under construction (0.1.0, nothing is released). The plan, the decisions and the work packages are in
 `docs/guard/plan.md` of the infrastructure repository `tasmail/erpnext-infra` (pull request #329).
 
-## What it does
+## What it will do (planned, none of it is built yet)
 
 - Checks a CAPTCHA token (reCAPTCHA v3 first, Cloudflare Turnstile later) on guest forms and on `sign_up`,
   `reset_password`, `send_login_link` and `login`.

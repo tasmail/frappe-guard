@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Hosted runners on purpose: the repository is public, so a pull request from a fork must never run on our own runner.
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install ruff==0.17.3 pytest==9.2.0 pytest-cov==7.1.0 tomli
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest --cov --cov-report=term-missing
