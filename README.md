@@ -32,6 +32,20 @@ a bench (`pytest`); the integration tests need a site and Redis. See `AGENTS.md`
 
 MIT. The idea of the modes and the fail policy comes from reviewing `frappe-contact-form`; no code of it is copied.
 
+## Browser side
+
+`frappe_guard/public/js/guard.js` (served as `/assets/frappe_guard/js/guard.js`, or inlined in the head of a page) makes the token:
+
+```js
+FrappeGuard.init({ siteKey: "<the public site key>" });
+const response = await FrappeGuard.request("/api/method/<method>", { action: "contact", method: "POST", body: formData });
+```
+
+The provider script loads on the first interaction with a form matching `form[data-guard-action]` (not at page load), from
+`www.google.com`, else `www.recaptcha.net`. One token is made per request. The request asks for JSON (`Accept`,
+`X-Requested-With`): Frappe answers any other client with an HTML page on a refusal. A failure of the browser side is never
+thrown: the request goes without a token and the server decides. The site key is put in the page; do not fetch it.
+
 ## Reserved names
 
 `guard_token` (a form field) and `X-Guard-Token` (a header) carry the CAPTCHA token; the guard removes the field from every
