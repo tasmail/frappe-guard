@@ -5,11 +5,11 @@ Rules for AI coding agents and humans working in this repository. The plan of th
 
 ## Scope and status
 
-The app covers the registration, the login and the contact form of a Frappe v15 site: `sign_up`, `login`, `send_login_link`,
-`reset_password`, `contact`. Nothing else is covered by default (the download and the calculation of the FossDoc shop keep their
+The app covers the registration, the login and the contact form of a Frappe v15 site: `sign_up`, `send_login_link`,
+`reset_password`, `contact` (the password `login` is not covered: the owner dropped it). Nothing else is covered by default (the download and the calculation of the FossDoc shop keep their
 own check in `fossdoc_shop`); do not widen the default map without the owner's word, a site opts in by configuration.
-Built and merged: the skeleton, the check core, the `auth_hooks` hook, `guard.js`, the rate limiter. Not built: the password `login`
-(it is processed before any hook), the script of the stock `/login` page, the contact form migration, Turnstile. Nothing is
+Built and merged: the skeleton, the check core, the `auth_hooks` hook, `guard.js`, the rate limiter. Not covered, by decision: the password `login`
+(it is processed before any hook). Not built: the script of the stock `/login` page, the contact form migration, Turnstile. Nothing is
 installed on a site yet. The plan and the Press side (`press_guard_site.yml`, the release group) are in `tasmail/erpnext-infra`
 (`docs/guard/plan.md`); the README of this repository says what the guard closes, how it works and why.
 

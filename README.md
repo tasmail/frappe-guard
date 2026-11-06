@@ -1,11 +1,11 @@
 # frappe_guard
 
-CAPTCHA and rate limit for the registration, the login and the contact form of Frappe v15 sites (sign-up, password reset, the
-e-mail login link and the contact form; the password login is planned, see Status).
+CAPTCHA and rate limit for the registration, the e-mail login and the contact form of Frappe v15 sites (sign-up, password reset,
+the e-mail login link and the contact form). The password login is **not covered** (see below).
 
 Status: **under construction, nothing is released and it is not installed on any site yet.** Merged: the skeleton, the check core,
-the request hook, the rate limiter and the browser script. Not built yet: protection of the password `login` (**`login` is not
-protected today**), the script for the stock `/login` page (package P6: that page's sign-up, reset and e-mail-link forms send no
+the request hook, the rate limiter and the browser script. Not covered, by decision: the password `login` (**it is not
+protected**). Not built yet: the script for the stock `/login` page (package P6: that page's sign-up, reset and e-mail-link forms send no
 token yet), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the migration of the contact form
 of the FossDoc shop (after the migration the check in `fossdoc_shop` remains only for the download and the calculation, which this
 app does not cover).
@@ -81,7 +81,7 @@ the CAPTCHA check that lives in `fossdoc_shop`: this app does not cover them.
 | `send_login_link` | `frappe.www.login.send_login_link` | mails a login link to `email` | pass (fail open) | recipient (`email`); account (signed-in only) |
 | `contact` | `frappe.www.contact.send_message` | sends a message to the company (and, if enabled in Contact Us Settings, an acknowledgement to the sender) | refuse | |
 
-*Fail open* for reset and the link (and for the future `login`) is deliberate: a Google outage must not lock customers out of their
+*Fail open* for reset and the link is deliberate: a Google outage must not lock customers out of their
 accounts; the counters still bound the abuse. The forms and sign-up *fail closed* with a message that asks to try again later.
 The same policy governs an outage of Redis (the counters): with Redis down a closed action (the forms, sign-up) refuses everyone in
 `enforce`, an open one passes.
@@ -90,8 +90,8 @@ The same policy governs an outage of Redis (the counters): with Redis down a clo
 (`fossdoc_shop.api.send_calculation`) of the FossDoc shop keep their own check inside `fossdoc_shop`. Other guest endpoints of Frappe (newsletter `subscribe`, which mails a confirmation to an address the
 caller chooses, Web Form `accept`, the comment `add_comment`, and any app's own) are **not guarded until a site adds them** to
 `guard_action_map`; a custom action has the address and site counters but no recipient counter. The password `login` (`cmd=login`, `/api/method/login`) is processed by Frappe's `LoginManager`
-inside `HTTPRequest()`, **before any hook**, so this hook cannot see it; it needs its own mechanism (package P7: a wrapper of
-`LoginManager.login`, or password login switched off where a shop uses only the e-mail link). Not in scope: the OTP login of
+inside `HTTPRequest()`, **before any hook**, so this hook cannot see it; it is not covered (the owner decided not to build a
+wrapper of `LoginManager.login`); a site that wants it protected switches password login off with the stock setting and uses the e-mail link. Not in scope: the OTP login of
 the staff, a WAF, and the edge limit of the proxy (which stays and is extended on the Press side).
 
 ## Modes
