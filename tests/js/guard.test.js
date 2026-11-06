@@ -19,9 +19,12 @@ function browser(options) {
 			listeners[name] = (listeners[name] || []).filter((item) => item !== fn);
 		},
 	};
+	const clock = { t: 1000 };
 	const env = {
 		window: win,
 		document: doc,
+		now: () => clock.t,
+		Headers: options.Headers,
 		fetch: (url, settings) => {
 			calls.push({ url, settings });
 			return Promise.resolve({ status: options.status || 200 });
@@ -38,7 +41,7 @@ function browser(options) {
 			execute: execute || ((key, opts) => Promise.resolve("token-for-" + opts.action)),
 		};
 	};
-	return { env, scripts, timers, listeners, calls, win, install };
+	return { env, scripts, timers, listeners, calls, win, install, clock };
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -78,8 +81,8 @@ test("a host that hangs is abandoned after the timeout", async () => {
 	client.init({ siteKey: "K" });
 	const pending = client.token("contact");
 	await tick();
-	assert.equal(b.timers[0].ms, 8000);
-	b.timers[0].fn(); // the first host never answers
+	assert.deepEqual(b.timers.map((timer) => timer.ms), [8000, 8000]); // the deadline of the step, the host
+	b.timers[1].fn(); // the first host never answers
 	await tick();
 	assert.equal(b.scripts.length, 2);
 	b.install();
@@ -97,6 +100,9 @@ test("no token is made and nothing throws when every host fails, and a later cal
 	await tick();
 	b.scripts[1].onerror();
 	assert.equal(await first, "");
+	assert.equal(await client.token("contact"), ""); // not waited for again at once
+	assert.equal(b.scripts.length, 2);
+	b.clock.t += 15001;
 	const second = client.token("contact");
 	await tick();
 	assert.equal(b.scripts.length, 3); // loading starts again
@@ -122,7 +128,7 @@ test("a failing or hanging execute gives an empty token", async () => {
 	b.install(() => new Promise(() => {}));
 	const hanging = client.token("contact");
 	await tick();
-	b.timers[b.timers.length - 1].fn();
+	b.timers[b.timers.length - 1].fn(); // the deadline of the step
 	assert.equal(await hanging, "");
 	b.install(() => Promise.resolve(42));
 	assert.equal(await client.token("contact"), "");
@@ -215,4 +221,128 @@ test("warm never throws", async () => {
 	const client = create(b.env);
 	client.init({});
 	assert.equal(await client.warm(), null);
+});
+
+test("a whole step that exceeds the deadline gives an empty token and is not repeated for 15 seconds", async () => {
+	const b = browser();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	const slow = client.token("contact");
+	await tick();
+	b.timers[0].fn(); // the deadline of the whole step: 8 seconds, not the sum of the hosts and the token
+	assert.equal(await slow, "");
+	assert.equal(await client.token("contact"), "");
+	assert.equal(b.scripts.length, 1);
+});
+
+test("a failing execute does not make the provider unreachable", async () => {
+	const b = browser();
+	b.install(() => Promise.reject(new Error("invalid key")));
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	assert.equal(await client.token("contact"), "");
+	b.install();
+	assert.equal(await client.token("contact"), "token-for-contact"); // no waiting period after an error of execute
+});
+
+test("a script that loads without grecaptcha is removed and the next host is tried", async () => {
+	const b = browser();
+	const removed = [];
+	b.env.document.head.appendChild = (script) => {
+		script.parentNode = { removeChild: (item) => removed.push(item) };
+		b.scripts.push(script);
+	};
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	const pending = client.token("contact");
+	await tick();
+	b.scripts[0].onload(); // loaded, but nothing usable
+	await tick();
+	assert.equal(removed.length, 1);
+	assert.equal(b.scripts.length, 2);
+	b.install();
+	b.scripts[1].onload();
+	assert.equal(await pending, "token-for-contact");
+	b.scripts[0].onerror();
+	assert.equal(removed.length, 2);
+});
+
+test("a Headers instance, an array of pairs and a plain object of the caller are kept and merged without duplicates", async () => {
+	const b = browser({ Headers });
+	b.install();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	for (const base of [
+		new Headers({ "X-Frappe-CSRF-Token": "csrf", accept: "text/html" }),
+		[["X-Frappe-CSRF-Token", "csrf"], ["accept", "text/html"]],
+		{ "X-Frappe-CSRF-Token": "csrf", accept: "text/html" },
+	]) {
+		await client.request("/x", { action: "contact", headers: base });
+		const sent = b.calls[b.calls.length - 1].settings.headers;
+		const get = (name) => (sent instanceof Headers ? sent.get(name) : sent[name]);
+		assert.equal(get("X-Frappe-CSRF-Token"), "csrf");
+		assert.equal(get("Accept"), "application/json");
+		assert.equal(get("X-Guard-Token"), "token-for-contact");
+	}
+});
+
+test("the plain-object merge replaces a differently cased header instead of duplicating it", async () => {
+	const b = browser();
+	b.install();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	await client.request("/x", { action: "contact", headers: { accept: "text/html", "x-requested-with": "x" } });
+	const sent = b.calls[0].settings.headers;
+	assert.deepEqual(Object.keys(sent).map((name) => name.toLowerCase()).sort(), [
+		"accept",
+		"x-guard-token",
+		"x-requested-with",
+	]);
+});
+
+test("hosts that are not plain host names are ignored, and a bad selector does not break the page", async () => {
+	const b = browser();
+	const client = create(b.env);
+	client.init({ siteKey: "K", hosts: ["evil.com/x?", "a.com@b.com", 5], selector: "((" });
+	const throwing = { target: { closest: () => { throw new SyntaxError("bad selector"); } } };
+	b.listeners.focusin[0](throwing); // does not throw
+	const pending = client.token("contact");
+	await tick();
+	assert.match(b.scripts[0].src, /^https:\/\/www\.google\.com\//); // the defaults, not the bad hosts
+	client.init({ siteKey: "K", hosts: ["good.example", "evil.com/x?"] });
+	assert.ok(pending);
+});
+
+test("a repeated init with the same settings does not restart a load in flight", async () => {
+	const b = browser();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	client.warm();
+	await tick();
+	client.init({ siteKey: "K" });
+	client.warm();
+	await tick();
+	assert.equal(b.scripts.length, 1);
+});
+
+test("the file as a browser loads it: it defines window.FrappeGuard once and initialises from FRAPPE_GUARD", () => {
+	const vm = require("node:vm");
+	const fs = require("node:fs");
+	const source = fs.readFileSync(require.resolve("../../frappe_guard/public/js/guard.js"), "utf8");
+	const listeners = [];
+	const sandbox = {
+		document: { head: { appendChild() {} }, createElement: () => ({}), addEventListener: (n) => listeners.push(n) },
+		Date,
+		Promise,
+		setTimeout,
+		clearTimeout,
+		FRAPPE_GUARD: { siteKey: "K" },
+	};
+	sandbox.window = sandbox;
+	vm.runInNewContext(source, sandbox);
+	const first = sandbox.FrappeGuard;
+	assert.equal(typeof first.request, "function");
+	assert.deepEqual(listeners.sort(), ["focusin", "keydown", "pointerdown"]); // init watched the page
+	vm.runInNewContext(source, sandbox); // a second copy of the file must not replace the first client
+	assert.equal(sandbox.FrappeGuard, first);
 });
