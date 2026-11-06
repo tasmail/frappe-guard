@@ -81,7 +81,7 @@ test("a host that hangs is abandoned after the timeout", async () => {
 	client.init({ siteKey: "K" });
 	const pending = client.token("contact");
 	await tick();
-	assert.deepEqual(b.timers.map((timer) => timer.ms), [8000, 8000]); // the deadline of the step, the host
+	assert.deepEqual(b.timers.map((timer) => timer.ms), [8000, 4000]); // the deadline of the step, the host
 	b.timers[1].fn(); // the first host never answers
 	await tick();
 	assert.equal(b.scripts.length, 2);
@@ -345,4 +345,50 @@ test("the file as a browser loads it: it defines window.FrappeGuard once and ini
 	assert.deepEqual(listeners.sort(), ["focusin", "keydown", "pointerdown"]); // init watched the page
 	vm.runInNewContext(source, sandbox); // a second copy of the file must not replace the first client
 	assert.equal(sandbox.FrappeGuard, first);
+});
+
+test("a host that hangs is removed, so its late onload cannot load api.js twice", async () => {
+	const b = browser();
+	const removed = [];
+	b.env.document.head.appendChild = (script) => {
+		script.parentNode = { removeChild: (item) => removed.push(item) };
+		b.scripts.push(script);
+	};
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	client.token("contact");
+	await tick();
+	b.timers[1].fn();
+	await tick();
+	assert.equal(removed.length, 1);
+	assert.equal(b.scripts.length, 2); // the fallback host is tried inside the same request's deadline
+});
+
+test("a load chain that failed after init started another one does not clobber the new load", async () => {
+	const b = browser();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	client.warm();
+	await tick();
+	client.init({ siteKey: "OTHER" }); // a new load will start on the next call
+	client.warm();
+	await tick();
+	const before = b.scripts.length;
+	b.scripts[0].onerror(); // the old chain fails now
+	await tick();
+	client.warm();
+	await tick();
+	assert.ok(b.scripts.length >= before); // no extra duplicate load of the new key
+});
+
+test("a provider that became ready after the deadline is used again at once", async () => {
+	const b = browser();
+	const client = create(b.env);
+	client.init({ siteKey: "K" });
+	const slow = client.token("contact");
+	await tick();
+	b.timers[0].fn(); // the deadline
+	assert.equal(await slow, "");
+	b.install(); // the abandoned load finished meanwhile
+	assert.equal(await client.token("contact"), "token-for-contact");
 });

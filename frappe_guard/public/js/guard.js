@@ -40,7 +40,7 @@
 
 	var HOSTS = ["www.google.com", "www.recaptcha.net"];
 	var HOST_PATTERN = /^[a-z0-9.-]+$/i; // a host name only: no path, no credentials
-	var LOAD_TIMEOUT = 8000; // per host, when the script is warmed up
+	var LOAD_TIMEOUT = 4000; // per host: two hosts fit in the deadline of one request
 	var TOKEN_DEADLINE = 8000; // for the whole token step of a request
 	var UNREACHABLE_FOR = 15000;
 	var EVENTS = ["focusin", "pointerdown", "keydown"];
@@ -89,9 +89,15 @@
 		function loadFrom(host) {
 			return new Promise(function (resolve, reject) {
 				var script = doc.createElement("script");
+				script.guardTimer = setTimer(function () {
+					// a host that hangs is abandoned: its late onload must not load api.js a second time
+					remove(script);
+					reject(new Error("timeout"));
+				}, LOAD_TIMEOUT);
 				script.async = true;
 				script.src = "https://" + host + "/recaptcha/api.js?render=" + encodeURIComponent(siteKey);
 				script.onload = function () {
+					clearTimer(script.guardTimer);
 					if (providerReady()) {
 						resolve();
 					} else {
@@ -100,6 +106,7 @@
 					}
 				};
 				script.onerror = function () {
+					clearTimer(script.guardTimer);
 					remove(script);
 					reject(new Error("load " + host));
 				};
@@ -118,13 +125,17 @@
 				var attempt = Promise.reject(new Error("start"));
 				hosts.forEach(function (host) {
 					attempt = attempt.catch(function () {
-						return withTimeout(loadFrom(host), LOAD_TIMEOUT);
+						return loadFrom(host);
 					});
 				});
-				loading = attempt.catch(function (error) {
-					loading = null; // a later call tries again
+				var mine = attempt.catch(function (error) {
+					if (loading === mine) {
+						// a later call tries again (not when init started another load meanwhile)
+						loading = null;
+					}
 					throw error;
 				});
+				loading = mine;
 			}
 			return loading;
 		}
@@ -138,7 +149,7 @@
 		}
 
 		function token(action) {
-			if (now() < unreachableUntil) {
+			if (now() < unreachableUntil && !providerReady()) {
 				return Promise.resolve("");
 			}
 			return withTimeout(
