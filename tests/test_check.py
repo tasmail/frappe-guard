@@ -1,7 +1,7 @@
 import pytest
 
 from frappe_guard import check
-from frappe_guard.policy import Outcome
+from frappe_guard.policy import Outcome, Verdict
 from frappe_guard.providers.stub import StubProvider
 
 
@@ -124,13 +124,31 @@ def test_a_broken_database_read_does_not_crash_the_check(configured):
 	assert check.evaluate("contact", "tok", StubProvider()).allow
 
 
-def test_when_the_configuration_itself_fails_the_check_is_enforced_with_the_code_defaults(
+def test_when_the_configuration_itself_fails_the_check_falls_back_to_the_code_defaults_in_monitor(
 	frappe_stub, monkeypatch
 ):
 	def boom(action):
 		raise RuntimeError("config")
 
 	monkeypatch.setattr(check.config, "policy_for", boom)
-	assert not check.evaluate("contact", "tok", StubProvider()).allow  # a form fails closed
-	assert check.evaluate("login", "tok", StubProvider()).allow  # login fails open
-	assert check.evaluate("unknown_action", "tok", StubProvider()).outcome == Outcome.PROVIDER_ERROR
+	for action in ("contact", "login", "unknown_action"):  # monitor never refuses
+		assert check.evaluate(action, "tok", StubProvider(Outcome.PASS)).allow
+	broken = check.evaluate("contact", "tok", Broken())
+	assert broken.outcome == Outcome.PROVIDER_ERROR and broken.mode == "monitor" and broken.allow
+
+
+def test_a_failing_logger_does_not_break_the_check(configured, monkeypatch):
+	def boom(name=None):
+		raise RuntimeError("log")
+
+	monkeypatch.setattr(check.frappe, "logger", boom)
+	assert check.evaluate("contact", "tok-1", Broken()).outcome == Outcome.PROVIDER_ERROR
+
+
+def test_a_revoked_secret_reaches_the_decision_as_not_configured(configured):
+	class Revoked:
+		def verify(self, token, action, threshold):
+			return Verdict(Outcome.NOT_CONFIGURED)
+
+	decision = check.evaluate("contact", "tok", Revoked())
+	assert not decision.allow and decision.outcome == Outcome.NOT_CONFIGURED

@@ -62,3 +62,30 @@ def test_a_missing_doctype_or_a_database_error_leaves_the_code_defaults(frappe_s
 
 	frappe_stub.db.get_single_value = boom
 	assert config.policy_for("contact").mode == MONITOR
+
+
+def test_an_invalid_star_mode_does_not_shadow_guard_mode(frappe_stub):
+	frappe_stub.conf.update(guard_mode="enforce", guard_actions={"*": {"mode": "bogus"}})
+	assert config.policy_for("contact").mode == ENFORCE
+	assert "field=mode" in frappe_stub.log.lines[0]
+
+
+def test_an_invalid_guard_mode_is_logged_and_ignored(frappe_stub):
+	frappe_stub.conf["guard_mode"] = "loud"
+	assert config.policy_for("contact").mode == MONITOR
+	assert frappe_stub.log.lines == ["ignored an invalid override: action=* field=guard_mode"]
+
+
+def test_the_site_config_mode_beats_a_per_action_mode_of_guard_settings(frappe_stub):
+	frappe_stub.db.singles[("Guard Settings", "action_overrides")] = '{"contact": {"mode": "off"}}'
+	frappe_stub.conf["guard_mode"] = "enforce"
+	assert config.policy_for("contact").mode == ENFORCE
+
+
+def test_a_provider_action_override_works_with_a_star_layer(frappe_stub):
+	frappe_stub.conf["guard_actions"] = {
+		"*": {"threshold": 0.8},
+		"contact": {"provider_action": "contact_form"},
+	}
+	policy = config.policy_for("contact")
+	assert (policy.provider_action, policy.threshold) == ("contact_form", 0.8)

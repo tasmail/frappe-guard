@@ -1,5 +1,7 @@
 """Google reCAPTCHA v3: the verification of a token (the stricter checks of `fossdoc_shop/captcha.py`)."""
 
+import math
+
 import requests
 
 from frappe_guard.policy import Outcome, Verdict
@@ -35,7 +37,8 @@ class RecaptchaV3:
 		if not isinstance(reply, dict):
 			return Verdict(Outcome.PROVIDER_ERROR)
 		score = reply.get("score")
-		score = score if isinstance(score, (int, float)) and not isinstance(score, bool) else 0
+		numeric = isinstance(score, (int, float)) and not isinstance(score, bool)
+		score = score if numeric and math.isfinite(score) else 0  # NaN is valid JSON for Python: not a score
 		if reply.get("success") is not True:
 			codes = reply.get("error-codes")
 			if isinstance(codes, list) and SECRET_ERRORS & set(map(str, codes)):

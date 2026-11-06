@@ -10,7 +10,7 @@ import frappe
 from frappe import _
 
 from frappe_guard import config
-from frappe_guard.policy import DEFAULTS, ENFORCE, OFF, Decision, Outcome, Verdict, decide
+from frappe_guard.policy import DEFAULTS, MONITOR, OFF, Decision, Outcome, Verdict, decide
 from frappe_guard.providers.recaptcha_v3 import RecaptchaV3
 
 MAX_TOKEN = 4096
@@ -32,22 +32,34 @@ def _usable(token) -> bool:
 def evaluate(action: str, token, provider=None) -> Decision:
 	"""Decide whether a request of `action` with `token` passes. Never raises; the caller throws on `allow` False.
 
-	An unexpected error is an outage of the check: the fail policy of the action decides, in the configured mode (in `enforce`
+	An unexpected error is an outage of the check: the fail policy of the action decides, in the configured mode (in `monitor`
 	when the configuration itself cannot be read), so a broken check neither crashes the request nor opens a closed action.
 	"""
 	try:
 		return _evaluate(action, token, provider)
-	except Exception:  # noqa: BLE001 by design, see the docstring
-		frappe.logger("frappe_guard").info("the check failed unexpectedly: action=%s", action)
+	except Exception:  # noqa: BLE001  by design: a broken check must not break the request
+		_log("the check failed unexpectedly: action=%s", action)
 		return decide(_fallback_policy(action), Verdict(Outcome.PROVIDER_ERROR))
 
 
+def _log(message: str, *args) -> None:
+	try:
+		frappe.logger("frappe_guard").info(message, *args)
+	except Exception:  # noqa: BLE001, S110  logging must not break the request either
+		pass
+
+
 def _fallback_policy(action: str):
-	"""The policy of the action as configured; when even that fails, the code defaults in `enforce` (fail safe)."""
+	"""The policy of the action as configured; when even that fails, the code defaults in `monitor`.
+
+	The mode is unknown then, and every site starts in `monitor` for a week: a bug of the guard must not refuse the forms of a
+	site that never asked for `enforce` (the honeypot and the rate limit stay). A site in `enforce` is not protected for
+	the length of such a failure; the log line is the signal.
+	"""
 	try:
 		return config.policy_for(action)
-	except Exception:  # noqa: BLE001 by design, see the docstring of `evaluate`
-		return replace(DEFAULTS.get(action) or config.policy.resolve(action), mode=ENFORCE)
+	except Exception:  # noqa: BLE001  see above
+		return replace(DEFAULTS.get(action) or config.policy.resolve(action), mode=MONITOR)
 
 
 def _evaluate(action: str, token, provider) -> Decision:

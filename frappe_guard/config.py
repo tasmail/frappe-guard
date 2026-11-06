@@ -37,7 +37,7 @@ def _single(field: str):
 	"""A value of `Guard Settings`; None when the DocType is not installed yet or the database fails."""
 	try:
 		return frappe.db.get_single_value(SETTINGS, field)
-	except Exception:  # noqa: BLE001 by design, see the docstring
+	except Exception:  # noqa: BLE001  the DocType is not there yet, or the database fails: the code defaults apply
 		return None
 
 
@@ -46,8 +46,13 @@ def _site_layer() -> dict:
 	actions = frappe.conf.get("guard_actions")
 	layer = {key: value for key, value in actions.items()} if isinstance(actions, dict) else {}
 	star = dict(layer.get("*")) if isinstance(layer.get("*"), dict) else {}
-	if frappe.conf.get("guard_mode") in policy.MODES:
-		star.setdefault("mode", frappe.conf.get("guard_mode"))
+	mode = frappe.conf.get("guard_mode")
+	if mode is not None and mode not in policy.MODES:
+		warn_ignored("*", "guard_mode")
+	elif mode is not None and star.get("mode") not in policy.MODES:
+		if "mode" in star:
+			warn_ignored("*", "mode")
+		star["mode"] = mode  # an invalid `guard_actions["*"]["mode"]` must not shadow it
 	if star:
 		layer["*"] = star
 	return layer

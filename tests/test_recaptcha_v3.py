@@ -116,3 +116,8 @@ def test_the_host_list_ignores_items_that_are_not_strings_and_an_empty_list_pass
 		provider(GOOD, hosts=[5, None, "www.example.com"]).verify("t", "contact", 0.5).outcome == Outcome.PASS
 	)
 	assert provider(GOOD, hosts=[]).verify("t", "contact", 0.5).outcome == Outcome.HOST_MISMATCH
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+def test_a_score_that_is_not_finite_counts_as_zero(score):
+	assert provider(dict(GOOD, score=score)).verify("t", "contact", 0.5).outcome == Outcome.LOW_SCORE
