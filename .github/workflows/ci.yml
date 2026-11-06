@@ -4,15 +4,22 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# Hosted runners on purpose: the repository is public, so a pull request from a fork must never run on our own runner.
 jobs:
   lint-and-unit:
-    runs-on: [self-hosted, linux, erpnext-infra]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: pip install ruff pytest
+          python-version: ${{ matrix.python-version }}
+      - run: pip install ruff pytest tomli
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest

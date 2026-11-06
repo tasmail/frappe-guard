@@ -2,7 +2,11 @@ import importlib
 import json
 from pathlib import Path
 
-import tomllib
+try:
+	import tomllib
+except ModuleNotFoundError:  # Python 3.10
+	import tomli as tomllib
+
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "frappe_guard"
@@ -17,7 +21,7 @@ def test_hooks_name_the_app_and_a_hook_that_exists():
 
 
 def test_the_module_in_modules_txt_has_its_folder_and_doctype():
-	modules = (PACKAGE / "modules.txt").read_text().split("\n")
+	modules = (PACKAGE / "modules.txt").read_text().splitlines()
 	assert "Frappe Guard" in modules
 	definition = PACKAGE / "frappe_guard" / "doctype" / "guard_settings" / "guard_settings.json"
 	doctype = json.loads(definition.read_text())
