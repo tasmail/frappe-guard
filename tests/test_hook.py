@@ -13,9 +13,12 @@ SIGN_UP = "frappe.core.doctype.user.user.sign_up"
 @pytest.fixture
 def send(frappe_stub):
 	def go(path="/", method="POST", form=None, headers=None, user="Guest"):
-		frappe_stub.local.request = Request(EnvironBuilder(path=path, method=method).get_environ())
+		headers = {"X-Forwarded-For": "203.0.113.7", **(headers or {})}  # the client behind one trusted proxy
+		frappe_stub.local.request = Request(
+			EnvironBuilder(path=path, method=method, headers=headers).get_environ()
+		)
 		frappe_stub.form_dict = {} if form is None else form
-		frappe_stub.headers = headers or {}
+		frappe_stub.headers = headers
 		frappe_stub.session = types.SimpleNamespace(user=user)
 		hook.guard_request()
 
@@ -200,6 +203,60 @@ def test_an_error_of_ours_in_the_counters_is_an_outage_not_a_500(send, evaluated
 	frappe_stub.conf["guard_mode"] = "enforce"
 	with pytest.raises(Exception) as error:
 		send("/", form={"cmd": SIGN_UP})
-	assert "Too many requests" in str(error.value)  # sign_up fails closed
+	assert "not available" in str(error.value)  # sign_up fails closed; an outage is not "too many requests"
 	assert any("counters of the request failed" in line for line in frappe_stub.log.lines)
 	send("/", form={"cmd": "frappe.www.login.send_login_link"})  # open: passes
+
+
+def test_a_request_without_a_valid_token_cannot_burn_the_recipient_counter_of_a_victim(
+	send, frappe_stub, monkeypatch
+):
+	frappe_stub.conf["guard_mode"] = "enforce"
+	frappe_stub.conf["guard_recaptcha_secret"] = "s"
+	frappe_stub.conf["guard_hosts"] = ["www.example.com"]
+	limits(frappe_stub, "reset_password", ("recipient", 1, 2))
+	form = {"cmd": "frappe.core.doctype.user.user.reset_password", "user": "victim@example.com"}
+	for _ in range(10):  # an attacker, no token: refused by the captcha, the recipient counter is not touched
+		with pytest.raises(frappe_stub.ValidationError):
+			send("/", form=dict(form))
+	assert not any(b"recipient" in key for key in frappe_stub.cache.values)
+
+	class Provider:  # a verified token passes
+		def verify(self, token, action, threshold):
+			return check.Verdict(Outcome.PASS, 0.9)
+
+	monkeypatch.setattr(check, "RecaptchaV3", lambda secret, hosts: Provider())
+	send("/", form=dict(form), headers={"X-Guard-Token": "good"})  # the victim himself still passes
+	assert any(b"recipient" in key for key in frappe_stub.cache.values)
+
+
+def test_one_address_over_its_hard_limit_does_not_exhaust_the_site_counter_for_everyone(
+	send, evaluated, frappe_stub
+):
+	frappe_stub.conf["guard_mode"] = "enforce"
+	limits(frappe_stub, "sign_up", ("ip", 1, 3), ("site", 5, 6))
+	for _ in range(3):
+		send("/", form={"cmd": SIGN_UP}, headers={"X-Forwarded-For": "198.51.100.1"})
+	for _ in range(50):  # the same address keeps going: refused, and not counted against the site
+		with pytest.raises(frappe_stub.ValidationError):
+			send("/", form={"cmd": SIGN_UP}, headers={"X-Forwarded-For": "198.51.100.1"})
+	send("/", form={"cmd": SIGN_UP}, headers={"X-Forwarded-For": "198.51.100.2"})  # another address passes
+	site = [value for key, value in frappe_stub.cache.values.items() if b":site:" in key]
+	assert site == [4]  # 3 + 1, not 54
+
+
+def test_an_unknown_client_address_is_not_bucketed_with_the_proxy(send, evaluated, frappe_stub):
+	frappe_stub.conf["guard_mode"] = "enforce"
+	limits(frappe_stub, "sign_up", ("ip", 1, 1))
+	for _ in range(5):
+		send("/", form={"cmd": SIGN_UP}, headers={"X-Forwarded-For": ""})
+	assert not any(b":ip:" in key for key in frappe_stub.cache.values)
+
+
+def test_a_failing_settings_read_does_not_become_a_500(send, evaluated, frappe_stub):
+	def boom(doctype, field):
+		raise RuntimeError("db")
+
+	frappe_stub.db.get_single_value = boom
+	send("/", form={"cmd": SIGN_UP})  # monitor by the code defaults
+	assert len(evaluated) == 1

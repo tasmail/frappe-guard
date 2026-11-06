@@ -89,7 +89,11 @@ def test_an_invalid_limit_of_the_site_config_leaves_the_defaults(frappe_stub, ra
 
 def test_the_site_limits_replace_the_defaults_and_an_unknown_action_gets_the_fallback(frappe_stub):
 	frappe_stub.conf["guard_limits"] = {"contact": [{"kind": "site", "window": 60, "soft": 1, "hard": 2}]}
-	assert ratelimit.limits_for("contact") == (Limit("site", 60, 1, 2),)
+	named = ratelimit.limits_for("contact")
+	assert Limit("site", 60, 1, 2) in named and not any(l.kind == "site" and l.window == 3600 for l in named)
+	assert [l for l in named if l.kind == "ip"] == [
+		l for l in ratelimit.DEFAULT_LIMITS["contact"] if l.kind == "ip"
+	]
 	frappe_stub.conf["guard_limits"] = "not a dict"
 	assert ratelimit.limits_for("whatever") == ratelimit.FALLBACK_LIMITS
 
@@ -113,3 +117,40 @@ def test_the_recipient_is_normalised_and_comes_from_the_field_of_the_action():
 	for bad in ({}, {"email": ""}, {"email": "  "}, {"email": ["a"]}, {"email": 5}):
 		assert ratelimit.recipient("sign_up", bad) is None
 	assert ratelimit.recipient("sign_up", None) is None
+
+
+def test_a_config_that_names_only_the_ip_keeps_the_default_site_counter(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"sign_up": [{"kind": "ip", "window": 60, "soft": 1, "hard": 2}]}
+	kinds = [limit.kind for limit in ratelimit.limits_for("sign_up")]
+	assert "site" in kinds and "recipient" in kinds and kinds.count("ip") == 1
+
+
+def test_a_refused_request_does_not_feed_the_shared_counters(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"sign_up": [
+			{"kind": "ip", "window": 3600, "soft": 1, "hard": 1},
+			{"kind": "site", "window": 3600, "soft": 100, "hard": 100},
+		]
+	}
+	identities = ids(recipient="a@example.com")
+	results = [ratelimit.check("sign_up", identities) for _ in range(5)]
+	assert [r.level for r in results] == [Level.OK] + [Level.HARD] * 4
+	site = [value for key, value in frappe_stub.cache.values.items() if b":site:" in key]
+	assert site == [1]  # only the first request reached the site counter
+
+
+def test_the_kinds_to_count_can_be_chosen(frappe_stub):
+	ratelimit.check("sign_up", ids(recipient="a@example.com"), kinds=("recipient",))
+	assert [key for key in frappe_stub.cache.values if b":recipient:" not in key] == []
+
+
+def test_an_unknown_address_is_not_counted(frappe_stub):
+	ratelimit.check("contact", {"ip": "unknown", "site": "*"})
+	assert [key for key in frappe_stub.cache.values if b":ip:" in key] == []
+
+
+def test_a_plus_tag_does_not_make_a_new_recipient():
+	assert ratelimit.recipient("sign_up", {"email": "Victim+spam1@Example.com"}) == "victim@example.com"
+	assert ratelimit.recipient("sign_up", {"email": "victim+x@example.com"}) == ratelimit.recipient(
+		"sign_up", {"email": "victim@example.com"}
+	)

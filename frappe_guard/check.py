@@ -41,7 +41,7 @@ def evaluate(action: str, token, provider=None, threshold_bonus: float = 0) -> D
 		return _evaluate(action, token, provider, threshold_bonus)
 	except Exception:  # noqa: BLE001  by design: a broken check must not break the request
 		_log("the check failed unexpectedly: action=%s", action)
-		return decide(_fallback_policy(action), Verdict(Outcome.PROVIDER_ERROR))
+		return decide(policy_of(action), Verdict(Outcome.PROVIDER_ERROR))
 
 
 def _log(message: str, *args) -> None:
@@ -51,7 +51,7 @@ def _log(message: str, *args) -> None:
 		pass
 
 
-def _fallback_policy(action: str):
+def policy_of(action: str):
 	"""The policy of the action as configured; when even that fails, the code defaults in `monitor`.
 
 	The mode is unknown then, and every site starts in `monitor` for a week: a bug of the guard must not refuse the forms of a
@@ -90,7 +90,7 @@ def record(action: str, decision: Decision) -> None:
 	"""One log line for a request that did not pass (and for a request that `enforce` would refuse); never a token."""
 	if decision.outcome == Outcome.PASS:
 		return
-	frappe.logger("frappe_guard").info(
+	_log(
 		"action=%s outcome=%s mode=%s allow=%s score=%s",
 		action,
 		decision.outcome.value,

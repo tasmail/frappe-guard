@@ -32,6 +32,17 @@ a bench (`pytest`); the integration tests need a site and Redis. See `AGENTS.md`
 
 MIT. The idea of the modes and the fail policy comes from reviewing `frappe-contact-form`; no code of it is copied.
 
+## Rate limit
+
+Counters per action in the cache Redis (`SET NX EX` + `INCR` in one transaction, keys with the db-name prefix and a keyed hash of
+the identity). Kinds: `ip` (the N-th entry from the right of `X-Forwarded-For`, `guard_trusted_hops`, default 1; an unknown client
+is not counted), `account`, `recipient` (the address a mail goes to) and `site` (every request of the action). A soft limit raises
+the score the CAPTCHA demands, a hard limit refuses. The `account` and `recipient` counters of a guest are counted after the CAPTCHA
+passed, so a request without a valid token cannot burn the counter of a victim's address; a request refused by a per-identity limit
+is not counted against the shared counters. `guard_limits` of the site config tunes them per action and kind.
+Notes: the cache Redis normally runs with `maxmemory` and an eviction policy, so a counter can reset under memory pressure; a hung
+Redis is not timed out by Frappe (`from_url` sets no socket timeout). Verify the proxy chain before using `enforce`.
+
 ## Reserved names
 
 `guard_token` (a form field) and `X-Guard-Token` (a header) carry the CAPTCHA token; the guard removes the field from every

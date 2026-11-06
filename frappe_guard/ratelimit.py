@@ -7,7 +7,8 @@ name prefix: sites that share Redis do not share counters) and holds a hash, nev
 Kinds: `ip` (the client address, see `clientip`), `account` (the session user, for a signed-in session), `recipient` (the
 address a mail is sent to: `sign_up`, `reset_password`, `send_login_link` mail a caller-chosen address) and `site` (every
 request of the action: a flood guard that does not depend on any spoofable value). A `soft` limit only raises the score the
-CAPTCHA demands (a shared NAT is not locked out), a `hard` limit refuses. Redis down: the fail policy of the action decides, a
+CAPTCHA demands (a shared NAT is not locked out), a `hard` limit refuses. A guest's `account` and `recipient` counters are
+counted only after the CAPTCHA passed (`hook`): a request without a valid token cannot burn the counter of a victim's address. Redis down: the fail policy of the action decides, a
 closed action is never passed silently.
 """
 
@@ -16,7 +17,7 @@ from enum import IntEnum
 
 import frappe
 
-from frappe_guard.clientip import identifier
+from frappe_guard.clientip import UNKNOWN, identifier
 from frappe_guard.policy import CLOSED
 
 SOFT_BONUS = 0.2  # the score demanded on top of the threshold above a soft limit
@@ -45,14 +46,15 @@ class RateResult:
 	error: bool = False  # the counters could not be read
 
 
-_BURST = Limit("ip", 60, 3, 10)
+_BURST = Limit("ip", 60, 5, 20)
 _MAIL = (
-	Limit("ip", 3600, 5, 20),
-	Limit("recipient", 3600, 2, 5),
+	Limit("ip", 3600, 10, 60),
 	Limit("account", 3600, 5, 20),
+	# a mail-bomb cap, not a quota of the legitimate owner: a victim must still be able to reset his password
+	Limit("recipient", 3600, 3, 20),
 	Limit("site", 3600, 200, 600),
 )
-_FORM = (Limit("ip", 3600, 10, 40), Limit("site", 3600, 300, 1000))
+_FORM = (Limit("ip", 3600, 20, 100), Limit("site", 3600, 300, 1000))
 DEFAULT_LIMITS = {
 	"sign_up": (_BURST, *_MAIL),
 	"reset_password": (_BURST, *_MAIL),
@@ -62,6 +64,9 @@ DEFAULT_LIMITS = {
 	"calculation": (_BURST, *_FORM),
 }
 FALLBACK_LIMITS = (_BURST, *_FORM)
+# The per-identity counters come first, the site counter last: a request that a per-identity limit already refused is not
+# counted against the shared counters (one address must not exhaust the site counter for everyone).
+KIND_ORDER = ("ip", "account", "recipient", "site")
 
 
 def _limit(raw) -> Limit | None:
@@ -76,14 +81,19 @@ def _limit(raw) -> Limit | None:
 
 
 def limits_for(action: str) -> tuple[Limit, ...]:
-	"""The limits of an action: the site config (`guard_limits`: {action: [limit, ...]}) replaces the defaults, if valid."""
+	"""The limits of an action: the defaults, with the kinds that `guard_limits` of the site config names replaced.
+
+	`guard_limits` is {action: [limit, ...]}; a kind that it names replaces every default limit of that kind (a config with only
+	`ip` keeps the default `site` counter); an invalid limit is ignored.
+	"""
+	defaults = DEFAULT_LIMITS.get(action, FALLBACK_LIMITS)
 	site = frappe.conf.get("guard_limits")
 	raw = site.get(action) if isinstance(site, dict) else None
-	if isinstance(raw, list):
-		valid = tuple(limit for limit in map(_limit, raw) if limit)
-		if valid:
-			return valid
-	return DEFAULT_LIMITS.get(action, FALLBACK_LIMITS)
+	if not isinstance(raw, list):
+		return defaults
+	valid = tuple(limit for limit in map(_limit, raw) if limit)
+	named = {limit.kind for limit in valid}
+	return tuple(limit for limit in defaults if limit.kind not in named) + valid
 
 
 def hit(action: str, kind: str, ident: str, window: int) -> int:
@@ -95,25 +105,38 @@ def hit(action: str, kind: str, ident: str, window: int) -> int:
 	return int(pipe.execute()[-1])
 
 
-def check(action: str, identities: dict[str, str], fail: str = CLOSED) -> RateResult:
-	"""Count the request against every limit of the action that has an identity and return the worst level."""
+def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIND_ORDER) -> RateResult:
+	"""Count the request against the limits of the given kinds and return the worst level.
+
+	The kinds are counted in the order of `KIND_ORDER`; after the first hard limit nothing more is counted, so a refused request
+	does not feed the shared counters. An identity that is missing or unknown (see `clientip`) is not counted.
+	"""
 	worst = RateResult()
+	limits = sorted(limits_for(action), key=lambda limit: KIND_ORDER.index(limit.kind))
 	try:
-		for limit in limits_for(action):
+		for limit in limits:
 			ident = identities.get(limit.kind)
-			if not ident:
+			if limit.kind not in kinds or not ident or ident == UNKNOWN:
 				continue
 			count = hit(action, limit.kind, ident, limit.window)
 			level = Level.HARD if count > limit.hard else Level.SOFT if count > limit.soft else Level.OK
 			if level > worst.level:
 				worst = RateResult(level, limit.kind)
+			if worst.level == Level.HARD:
+				break
 	except Exception:  # noqa: BLE001  Redis down: the fail policy of the action decides
 		return RateResult(Level.HARD if fail == CLOSED else Level.OK, error=True)
 	return worst
 
 
 def recipient(action: str, form_dict) -> str | None:
-	"""The normalised address that a mail of this action goes to, if the action has such a field."""
+	"""The normalised address that a mail of this action goes to, if the action has such a field.
+
+	For counting only, a `+tag` of the local part is dropped (plus-aliases of one mailbox share a counter).
+	"""
 	field = RECIPIENT_FIELDS.get(action)
 	value = form_dict.get(field) if field and isinstance(form_dict, dict) else None
-	return value.strip().lower() if isinstance(value, str) and value.strip() else None
+	if not (isinstance(value, str) and value.strip()):
+		return None
+	local, at, domain = value.strip().lower().partition("@")
+	return f"{local.split('+', 1)[0]}{at}{domain}"
