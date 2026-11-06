@@ -32,6 +32,32 @@ a bench (`pytest`); the integration tests need a site and Redis. See `AGENTS.md`
 
 MIT. The idea of the modes and the fail policy comes from reviewing `frappe-contact-form`; no code of it is copied.
 
+## Browser side
+
+`frappe_guard/public/js/guard.js` (served as `/assets/frappe_guard/js/guard.js`, or inlined in the head of a page) makes the token:
+
+```js
+FrappeGuard.init({ siteKey: "<the public site key>" });
+const response = await FrappeGuard.request("/api/method/<method>", { action: "contact", method: "POST", body: formData });
+```
+
+The provider script loads on the first interaction with a form matching `form[data-guard-action]` (not at page load), from
+`www.google.com`, else `www.recaptcha.net`. One token is made per request. The request asks for JSON (`Accept`,
+`X-Requested-With`): Frappe answers any other client with an HTML page on a refusal. A failure of the browser side is never
+thrown: the request goes without a token and the server decides. The site key is put in the page; do not fetch it.
+
+Notes:
+- `request` merges its headers with the ones of the caller (a `Headers` object, pairs or a plain object; case-insensitive) and does
+  not set `credentials` or a content type (a `FormData` body gets its own). The caller passes `X-Frappe-CSRF-Token` where it needs one.
+- The whole token step is capped at 8 seconds; after the provider could not be reached, requests do not wait for it again for
+  15 seconds. A request that cannot get a token goes out without it.
+- It needs `Promise` and `fetch` (no polyfill). `init({hosts})` accepts plain host names only. Load one `api.js?render=` per
+  page: another key on the same page makes `execute` fail.
+- Content Security Policy: `script-src` and `frame-src` need `www.google.com`, `www.recaptcha.net` and `www.gstatic.com`. The
+  reCAPTCHA badge may be hidden only together with the disclosure text. A form inside a shadow root does not trigger the early
+  load (the script then loads when the first request asks for a token).
+- A cross-origin use needs `X-Guard-Token` and `X-Requested-With` in the `Access-Control-Allow-Headers` of the server.
+
 ## Rate limit
 
 Counters per action in the cache Redis (`SET NX EX` + `INCR` in one transaction, keys with the db-name prefix and a keyed hash of
