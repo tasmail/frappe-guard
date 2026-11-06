@@ -121,3 +121,34 @@ def test_a_change_of_the_settings_reaches_the_process_after_the_ttl(frappe_stub,
 	assert config.policy_for("contact").mode == MONITOR  # still the remembered value
 	clock["t"] += config.SETTINGS_TTL + 1
 	assert config.policy_for("contact").mode == ENFORCE
+
+
+def test_a_transient_failure_keeps_the_last_good_settings_and_is_retried_soon(frappe_stub, monkeypatch):
+	clock = {"t": 0.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
+	assert config.policy_for("contact").mode == ENFORCE
+	real = frappe_stub.db.get_single_value
+
+	def boom(doctype, field):
+		raise RuntimeError("MySQL server has gone away")
+
+	frappe_stub.db.get_single_value = boom
+	clock["t"] += config.SETTINGS_TTL + 1
+	assert config.policy_for("contact").mode == ENFORCE  # not silently reverted to monitor
+	frappe_stub.db.get_single_value = real
+	clock["t"] += config.FAILURE_TTL + 1  # retried after a few seconds, not after 30
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "off"
+	assert config.policy_for("contact").mode == "off"
+
+
+def test_a_failure_with_no_good_value_uses_the_code_defaults_and_retries_soon(frappe_stub, monkeypatch):
+	clock = {"t": 0.0}
+	monkeypatch.setattr(config.time, "monotonic", lambda: clock["t"])
+	real = frappe_stub.db.get_single_value
+	frappe_stub.db.get_single_value = lambda doctype, field: (_ for _ in ()).throw(RuntimeError("down"))
+	assert config.policy_for("contact").mode == MONITOR
+	frappe_stub.db.get_single_value = real
+	frappe_stub.db.singles[("Guard Settings", "default_mode")] = "enforce"
+	clock["t"] += config.FAILURE_TTL + 1
+	assert config.policy_for("contact").mode == ENFORCE

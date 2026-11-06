@@ -6,7 +6,6 @@ path and with any HTTP method) wins over the path; only when `cmd` is empty is t
 method cannot bypass the map. The name is matched as requested, before `override_whitelisted_methods`.
 """
 
-import functools
 import importlib
 
 import frappe
@@ -50,10 +49,11 @@ def requested_method(request, form_dict, known=()) -> str | None:
 		# a non-string `cmd` fails in the handler of Frappe itself: nothing is run
 		method = cmd if isinstance(cmd, str) else None
 	elif path.startswith(API_PREFIX) and "/method/" in path:
-		method = _routed_method(request)
+		method = _routed_method(request, known)
 	else:
 		return None
-	if _is_upload(method, known) and isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str):
+	# `upload_file` calls the method named in its `method` field: only a request that has such a field can be one
+	if isinstance(form_dict, dict) and isinstance(form_dict.get("method"), str) and _is_upload(method, known):
 		return form_dict["method"]
 	return method
 
@@ -75,24 +75,42 @@ def _handler():
 	return handler
 
 
-@functools.lru_cache(
-	maxsize=2048
-)  # a name is resolved once per process (the names a client sends are bounded by the cache)
+_RESOLVED: dict[tuple[str, str], object] = {}
+_RESOLVED_MAX = 2048
+
+
 def _resolve(method: str):
 	"""The function a requested name stands for, as `frappe.handler.get_attr` finds it, or None.
 
 	`frappe.get_attr` is not used: on a failure it throws and leaves a message in the response of a request that Frappe
-	answers fine (a dotless name such as `ping` or a server-script API).
+	answers fine (a dotless name such as `ping` or a server-script API). A name that resolved is remembered per site (the
+	installed apps differ per site, and the workers serve all the sites of a bench); a failure is never remembered (an app
+	may be installed later, an import may fail once), and the table is bounded.
 	"""
+	site = str(getattr(frappe.local, "site", "") or "")
+	key = (site, method)
+	if key in _RESOLVED:
+		return _RESOLVED[key]
 	try:
 		if "." not in method:  # the deprecated shorthand: a name of the globals of `frappe.handler`
-			return getattr(_handler(), method, None)
-		path, name = method.rsplit(".", 1)
-		if path.split(".")[0] not in frappe.get_installed_apps():
-			return None
-		return getattr(importlib.import_module(path), name, None)
+			found = getattr(_handler(), method, None)
+		else:
+			path, name = method.rsplit(".", 1)
+			if path.split(".")[0] not in frappe.get_installed_apps():
+				return None
+			found = getattr(importlib.import_module(path), name, None)
 	except Exception:  # noqa: BLE001  Frappe fails the same lookup and answers
 		return None
+	if found is not None:
+		if len(_RESOLVED) >= _RESOLVED_MAX:
+			_RESOLVED.clear()
+		_RESOLVED[key] = found
+	return found
+
+
+def _bare_names(known) -> set[str]:
+	"""The last segment of every guarded method (and of the `upload_file` names)."""
+	return {name.rsplit(".", 1)[-1] for name in (*known, *UPLOAD_METHODS)}
 
 
 def _v2():
@@ -107,7 +125,7 @@ def _rpc_endpoints() -> tuple:
 	return (v1.handle_rpc_call, _v2().handle_rpc_call)
 
 
-def _routed_method(request) -> str | None:
+def _routed_method(request, known=()) -> str | None:
 	from frappe.api import API_URL_MAP
 
 	try:
@@ -125,6 +143,9 @@ def _routed_method(request) -> str | None:
 	# v1: `/method/<m>/anything` still runs <m> (backward compatibility of Frappe)
 	method = method.split("/")[0]
 	if arguments.get("doctype"):  # v2: `/method/<doctype>/<method>` calls the method of the controller module
+		# Resolving the module costs a Redis read and an unpickle: only for a name that can be a guarded method or upload_file
+		if method not in _bare_names(known):
+			return None
 		try:
 			from frappe.modules.utils import load_doctype_module
 

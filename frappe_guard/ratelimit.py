@@ -125,11 +125,21 @@ def hit(action: str, kind: str, ident: str, window: int) -> int:
 
 
 def _refund(entries: list[tuple[str, str, str, int]]) -> None:
-	"""Take back the counts of the counters that a refused request must not feed (best effort, never raises)."""
+	"""Take back the counts of the counters that a refused request must not feed (best effort, never raises).
+
+	Not atomic with the count: for the milliseconds in between, other requests see the counters a little too high (by the
+	number of requests in flight that are being refused).
+	"""
+	if not entries:
+		return
 	try:
 		pipe = frappe.cache.pipeline(transaction=True)
 		for entry in entries:
-			pipe.decr(_key(*entry))
+			key = _key(*entry)
+			# `SET NX EX` first: a key that expired or was evicted since the count must not come back as `-1` without a TTL (a
+			# counter that never resets); with the TTL a missing key is a harmless -1 that expires with its window
+			pipe.set(key, 0, ex=entry[3], nx=True)
+			pipe.decr(key)
 		pipe.execute()
 	except Exception:  # noqa: BLE001, S110  a counter that was not refunded only errs on the side of refusing
 		pass
@@ -156,7 +166,8 @@ def check(action: str, identities: dict[str, str], fail: str = CLOSED, kinds=KIN
 			(
 				limit,
 				(action, "unknown", SITE_IDENT, limit.window)
-				if ident == UNKNOWN
+				if limit.kind == "ip"
+				and ident == UNKNOWN  # only an address can be unknown, not a recipient named "unknown"
 				else (action, limit.kind, ident, limit.window),
 			)
 		)

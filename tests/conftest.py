@@ -51,7 +51,8 @@ class _Pipeline:
 	def execute(self):
 		if self.cache.down:
 			raise ConnectionError("redis is down")
-		self.cache.round_trips += 1
+		if self.commands:  # real redis-py does no I/O for an empty pipeline
+			self.cache.round_trips += 1
 		results = []
 		for command in self.commands:
 			if command[0] == "set":
@@ -171,6 +172,11 @@ def _make_frappe():
 FRAPPE = _make_frappe()
 
 
+def _reset_provider(module):
+	module.BREAKER.count, module.BREAKER.open_until = 0, 0.0
+	module.IN_FLIGHT = __import__("threading").BoundedSemaphore(module.MAX_IN_FLIGHT)
+
+
 @pytest.fixture(autouse=True)
 def frappe_stub():
 	FRAPPE.local = types.SimpleNamespace(conf={}, form_dict={}, request=None, site="test.local")
@@ -186,7 +192,8 @@ def frappe_stub():
 	for name, reset in (
 		("frappe_guard.clientip", lambda m: m._warned.clear()),
 		("frappe_guard.config", lambda m: m.reset()),
-		("frappe_guard.actions", lambda m: m._resolve.cache_clear()),
+		("frappe_guard.actions", lambda m: m._RESOLVED.clear()),
+		("frappe_guard.providers.recaptcha_v3", _reset_provider),
 	):
 		if name in sys.modules:
 			reset(sys.modules[name])

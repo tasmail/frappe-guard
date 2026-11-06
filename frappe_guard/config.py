@@ -15,12 +15,15 @@ SETTINGS = "Guard Settings"
 # the values for a short time: the hook of every guarded request would otherwise run two SQL queries. A change of the settings
 # reaches a process within this many seconds.
 SETTINGS_TTL = 30
+FAILURE_TTL = 3  # a failed read is retried soon, and the last good value keeps being served meanwhile
 _memo: dict[str, tuple[float, tuple]] = {}
+_good: dict[str, tuple] = {}  # the last values that were read successfully, per site
 
 
 def reset() -> None:
 	"""Forget the remembered settings (tests, and after a change that must show at once)."""
 	_memo.clear()
+	_good.clear()
 
 
 def secret() -> str:
@@ -46,11 +49,8 @@ def warn_ignored(action: str, field: str) -> None:
 
 
 def _single(field: str):
-	"""A value of `Guard Settings`; None when the DocType is not installed yet or the database fails."""
-	try:
-		return frappe.db.get_single_value(SETTINGS, field)
-	except Exception:  # noqa: BLE001  the DocType is not there yet, or the database fails: the code defaults apply
-		return None
+	"""A value of `Guard Settings`; raises when the DocType is not installed yet or the database fails."""
+	return frappe.db.get_single_value(SETTINGS, field)
 
 
 def _settings() -> tuple:
@@ -60,7 +60,15 @@ def _settings() -> tuple:
 	now = time.monotonic()
 	if remembered and remembered[0] > now:
 		return remembered[1]
-	values = (_single("default_mode"), _single("action_overrides"))
+	try:
+		values = (_single("default_mode"), _single("action_overrides"))
+	except Exception:  # noqa: BLE001  the DocType is not there yet, or the database fails
+		# One transient error must not turn a site that is in `enforce` in `Guard Settings` into `monitor` for a while: the last
+		# good values keep being served (the code defaults if there are none) and the read is retried in a few seconds.
+		values = _good.get(site, (None, None))
+		_memo[site] = (now + FAILURE_TTL, values)
+		return values
+	_good[site] = values
 	_memo[site] = (now + SETTINGS_TTL, values)
 	return values
 

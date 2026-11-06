@@ -205,3 +205,35 @@ def test_a_failing_logger_does_not_become_an_outage_of_the_counters(frappe_stub,
 	assert clientip.identifier(
 		"x"
 	)  # warns about the missing encryption_key; the logger raises; nothing escapes
+
+
+def test_a_refund_never_leaves_a_counter_without_a_ttl(frappe_stub):
+	entry = ("sign_up", "ip", "1.2.3.4", 60)
+	# the key expired or was evicted between the count and the refund: it must come back with its TTL
+	ratelimit._refund([entry])
+	(key,) = frappe_stub.cache.values
+	assert frappe_stub.cache.values[key] == -1 and frappe_stub.cache.ttls[key] == 60
+
+
+def test_a_refund_of_nothing_makes_no_round_trip(frappe_stub):
+	ratelimit._refund([])
+	assert frappe_stub.cache.round_trips == 0
+
+
+def test_a_recipient_named_unknown_is_a_recipient_not_an_unknown_client(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"reset_password": [{"kind": "recipient", "window": 3600, "soft": 1, "hard": 1}]
+	}
+	results = [
+		ratelimit.check("reset_password", {"ip": "1.2.3.4", "site": "*", "recipient": "unknown"})
+		for _ in range(3)
+	]
+	assert results[-1].level == Level.HARD
+	assert not any(b":unknown:" in key for key in frappe_stub.cache.values)
+
+
+def test_a_refund_that_fails_is_swallowed(frappe_stub):
+	frappe_stub.cache.down = True
+	ratelimit._refund(
+		[("sign_up", "ip", "1.2.3.4", 60)]
+	)  # no exception: a counter that was not refunded only over-counts

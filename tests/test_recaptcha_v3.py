@@ -121,3 +121,62 @@ def test_the_host_list_ignores_items_that_are_not_strings_and_an_empty_list_pass
 @pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
 def test_a_score_that_is_not_finite_counts_as_zero(score):
 	assert provider(dict(GOOD, score=score)).verify("t", "contact", 0.5).outcome == Outcome.LOW_SCORE
+
+
+def test_the_default_post_is_a_session_with_keep_alive_and_a_connect_and_a_read_timeout():
+	from frappe_guard.providers import recaptcha_v3
+
+	checker = RecaptchaV3("s", ["www.example.com"])
+	assert checker.post == recaptcha_v3.SESSION.post
+	assert checker.timeout == (1.5, 2.5)
+
+
+def test_the_breaker_stops_calling_a_provider_that_keeps_failing_and_closes_again():
+	from frappe_guard.providers import recaptcha_v3
+
+	clock = {"t": 100.0}
+	calls = []
+
+	def post(url, data=None, timeout=None):
+		calls.append(1)
+		raise requests.ConnectionError()
+
+	checker = RecaptchaV3("s", ["www.example.com"], post=post)
+	recaptcha_v3.BREAKER.clock = lambda: clock["t"]
+	try:
+		for _ in range(recaptcha_v3.BREAKER_FAILURES):
+			assert checker.verify("t", "contact", 0.5).outcome == Outcome.PROVIDER_ERROR
+		assert len(calls) == recaptcha_v3.BREAKER_FAILURES
+		assert checker.verify("t", "contact", 0.5).outcome == Outcome.PROVIDER_ERROR
+		assert len(calls) == recaptcha_v3.BREAKER_FAILURES  # open: no call is made
+		clock["t"] += recaptcha_v3.BREAKER_PAUSE + 1
+		checker.verify("t", "contact", 0.5)
+		assert len(calls) == recaptcha_v3.BREAKER_FAILURES + 1  # tried again after the pause
+	finally:
+		recaptcha_v3.BREAKER.clock = __import__("time").monotonic
+
+
+def test_a_success_resets_the_failures_of_the_breaker():
+	from frappe_guard.providers import recaptcha_v3
+
+	for _ in range(recaptcha_v3.BREAKER_FAILURES - 1):
+		provider(error=requests.ConnectionError()).verify("t", "contact", 0.5)
+	provider(GOOD).verify("t", "contact", 0.5)
+	assert recaptcha_v3.BREAKER.count == 0
+	provider(error=requests.ConnectionError()).verify("t", "contact", 0.5)
+	assert recaptcha_v3.BREAKER.allows()
+
+
+def test_too_many_calls_in_flight_are_not_made(monkeypatch):
+	import threading
+
+	from frappe_guard.providers import recaptcha_v3
+
+	monkeypatch.setattr(recaptcha_v3, "IN_FLIGHT", threading.BoundedSemaphore(1))
+	assert recaptcha_v3.IN_FLIGHT.acquire(blocking=False)  # one call is in flight and the limit is 1
+	calls = []
+	checker = RecaptchaV3("s", ["www.example.com"], post=lambda *a, **k: calls.append(1))
+	assert checker.verify("t", "contact", 0.5).outcome == Outcome.PROVIDER_ERROR
+	assert calls == []
+	recaptcha_v3.IN_FLIGHT.release()
+	assert provider(GOOD).verify("t", "contact", 0.5).outcome == Outcome.PASS  # released after the call
