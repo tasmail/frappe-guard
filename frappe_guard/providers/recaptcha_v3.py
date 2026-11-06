@@ -17,6 +17,8 @@ MAX_IN_FLIGHT = (
 BREAKER_FAILURES = 5  # consecutive failures of the provider that open the breaker
 BREAKER_PAUSE = 15  # seconds the provider is not called after that: the fail policy answers at once
 SESSION = requests.Session()  # keep-alive: a new TCP and TLS connection per check costs 100 to 300 ms
+# the pool must hold as many connections as calls may be in flight (the default is 10)
+SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=MAX_IN_FLIGHT))
 
 
 # A wrong or revoked secret is a fault of the configuration, not of the token.

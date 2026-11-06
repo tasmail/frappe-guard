@@ -121,6 +121,11 @@ def test_a_doctype_route_does_not_load_the_doctype_module_for_a_method_that_is_n
 	try:
 		run("/api/v2/method/User/get_list", method="GET")
 		assert loaded == []  # a Redis read and an unpickle that nobody needs
+		run("/api/v2/method/User/get_list", form={"method": "x"})
+		assert loaded == [
+			"User"
+		]  # a string `method` field: it may be an alias of upload_file, so it is resolved
+		loaded.clear()
 		run.stub.doctype_modules["User"] = "frappe.core.doctype.user.user"
 		run("/api/v2/method/User/sign_up", form={"email": "a@example.com"})
 		assert loaded == ["User"]  # the name can be a guarded method: resolved

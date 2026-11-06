@@ -180,3 +180,10 @@ def test_too_many_calls_in_flight_are_not_made(monkeypatch):
 	assert calls == []
 	recaptcha_v3.IN_FLIGHT.release()
 	assert provider(GOOD).verify("t", "contact", 0.5).outcome == Outcome.PASS  # released after the call
+
+
+def test_the_connection_pool_holds_as_many_connections_as_calls_may_be_in_flight():
+	from frappe_guard.providers import recaptcha_v3
+
+	adapter = recaptcha_v3.SESSION.get_adapter("https://www.google.com/recaptcha/api/siteverify")
+	assert adapter._pool_maxsize == recaptcha_v3.MAX_IN_FLIGHT

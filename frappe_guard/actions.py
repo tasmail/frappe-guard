@@ -49,7 +49,7 @@ def requested_method(request, form_dict, known=()) -> str | None:
 		# a non-string `cmd` fails in the handler of Frappe itself: nothing is run
 		method = cmd if isinstance(cmd, str) else None
 	elif path.startswith(API_PREFIX) and "/method/" in path:
-		method = _routed_method(request, known)
+		method = _routed_method(request, known, form_dict)
 	else:
 		return None
 	# `upload_file` calls the method named in its `method` field: only a request that has such a field can be one
@@ -125,7 +125,8 @@ def _rpc_endpoints() -> tuple:
 	return (v1.handle_rpc_call, _v2().handle_rpc_call)
 
 
-def _routed_method(request, known=()) -> str | None:
+def _routed_method(request, known=(), form=None) -> str | None:
+	form = form if isinstance(form, dict) else {}
 	from frappe.api import API_URL_MAP
 
 	try:
@@ -144,7 +145,8 @@ def _routed_method(request, known=()) -> str | None:
 	method = method.split("/")[0]
 	if arguments.get("doctype"):  # v2: `/method/<doctype>/<method>` calls the method of the controller module
 		# Resolving the module costs a Redis read and an unpickle: only for a name that can be a guarded method or upload_file
-		if method not in _bare_names(known):
+		# (a request with a string `method` field may be an alias of `upload_file` under any name: it is resolved)
+		if method not in _bare_names(known) and not isinstance(form.get("method"), str):
 			return None
 		try:
 			from frappe.modules.utils import load_doctype_module
