@@ -1,0 +1,239 @@
+import pytest
+
+from frappe_guard import ratelimit
+from frappe_guard.policy import CLOSED, OPEN
+from frappe_guard.ratelimit import Level, Limit
+
+
+def ids(**kw):
+	return {"ip": "1.2.3.4", "site": "*", **kw}
+
+
+def test_a_hit_counts_per_window_and_the_first_hit_sets_the_ttl(frappe_stub):
+	assert [ratelimit.hit("contact", "ip", "1.2.3.4", 60) for _ in range(3)] == [1, 2, 3]
+	assert list(frappe_stub.cache.ttls.values()) == [60]
+	assert ratelimit.hit("contact", "ip", "5.6.7.8", 60) == 1  # another identity
+	assert ratelimit.hit("contact", "ip", "1.2.3.4", 3600) == 1  # another window
+
+
+def test_the_key_has_the_db_prefix_and_holds_no_address_or_mail(frappe_stub):
+	ratelimit.hit("sign_up", "recipient", "victim@example.com", 3600)
+	(key,) = frappe_stub.cache.values
+	assert key.startswith(b"db|guard:sign_up:recipient:3600:")
+	assert b"victim" not in key and b"example.com" not in key
+
+
+def test_below_the_soft_limit_is_ok_then_soft_then_hard(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"contact": [{"kind": "ip", "window": 3600, "soft": 2, "hard": 4}]}
+	levels = [ratelimit.check("contact", ids()).level for _ in range(5)]
+	assert levels == [Level.OK, Level.OK, Level.SOFT, Level.SOFT, Level.HARD]
+	assert ratelimit.check("contact", ids()).kind == "ip"
+
+
+def test_a_kind_without_an_identity_is_not_counted(frappe_stub):
+	ratelimit.check("sign_up", {"site": "*"})
+	assert len(frappe_stub.cache.values) == 1  # only the site counter
+	ratelimit.check("sign_up", {})
+	assert len(frappe_stub.cache.values) == 1
+
+
+def test_the_worst_level_and_its_kind_are_reported(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"sign_up": [
+			{"kind": "ip", "window": 3600, "soft": 100, "hard": 200},
+			{"kind": "recipient", "window": 3600, "soft": 1, "hard": 2},
+		]
+	}
+	identities = ids(recipient="a@example.com")
+	results = [ratelimit.check("sign_up", identities) for _ in range(3)]
+	assert [(r.level, r.kind) for r in results] == [
+		(Level.OK, None),
+		(Level.SOFT, "recipient"),
+		(Level.HARD, "recipient"),
+	]
+
+
+def test_a_distinct_recipient_is_counted_on_its_own(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"sign_up": [{"kind": "recipient", "window": 3600, "soft": 1, "hard": 1}]
+	}
+	assert ratelimit.check("sign_up", ids(recipient="a@example.com")).level == Level.OK
+	assert ratelimit.check("sign_up", ids(recipient="b@example.com")).level == Level.OK
+	assert ratelimit.check("sign_up", ids(recipient="a@example.com")).level == Level.HARD
+
+
+def test_redis_down_follows_the_fail_policy_of_the_action(frappe_stub):
+	frappe_stub.cache.down = True
+	closed = ratelimit.check("contact", ids(), CLOSED)
+	assert (closed.level, closed.error) == (Level.HARD, True)  # a closed action is never passed silently
+	opened = ratelimit.check("login", ids(), OPEN)
+	assert (opened.level, opened.error) == (Level.OK, True)
+
+
+@pytest.mark.parametrize(
+	"raw",
+	[
+		"x",
+		{"kind": "bogus", "window": 60, "soft": 1, "hard": 2},
+		{"kind": "ip", "window": 0, "soft": 1, "hard": 2},
+		{"kind": "ip", "window": 60, "soft": 3, "hard": 2},
+		{"kind": "ip", "window": 60, "soft": 0, "hard": 2},
+		{"kind": "ip", "window": True, "soft": 1, "hard": 2},
+		{"kind": "ip", "window": "60", "soft": 1, "hard": 2},
+	],
+)
+def test_an_invalid_limit_of_the_site_config_leaves_the_defaults(frappe_stub, raw):
+	frappe_stub.conf["guard_limits"] = {"contact": [raw]}
+	assert ratelimit.limits_for("contact") == ratelimit.DEFAULT_LIMITS["contact"]
+
+
+def test_the_site_limits_replace_the_defaults_and_an_unknown_action_gets_the_fallback(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"contact": [{"kind": "site", "window": 60, "soft": 1, "hard": 2}]}
+	named = ratelimit.limits_for("contact")
+	assert Limit("site", 60, 1, 2) in named and not any(l.kind == "site" and l.window == 3600 for l in named)
+	assert [l for l in named if l.kind == "ip"] == [
+		l for l in ratelimit.DEFAULT_LIMITS["contact"] if l.kind == "ip"
+	]
+	frappe_stub.conf["guard_limits"] = "not a dict"
+	assert ratelimit.limits_for("whatever") == ratelimit.FALLBACK_LIMITS
+
+
+def test_the_defaults_have_a_site_counter_for_every_guarded_action_and_a_recipient_counter_for_the_mail_actions():
+	for action, limits in ratelimit.DEFAULT_LIMITS.items():
+		assert any(limit.kind == "site" for limit in limits), action
+	for action in ratelimit.RECIPIENT_FIELDS:
+		assert any(limit.kind == "recipient" for limit in ratelimit.DEFAULT_LIMITS[action]), action
+
+
+def test_the_recipient_is_normalised_and_comes_from_the_field_of_the_action():
+	assert ratelimit.recipient("sign_up", {"email": " A@Example.COM "}) == "a@example.com"
+	assert ratelimit.recipient("send_login_link", {"email": "a@example.com"}) == "a@example.com"
+	assert (
+		ratelimit.recipient("reset_password", {"user": "u@example.com", "email": "x@y.z"}) == "u@example.com"
+	)
+	assert (
+		ratelimit.recipient("contact", {"email": "a@example.com"}) is None
+	)  # no recipient field for this action
+	for bad in ({}, {"email": ""}, {"email": "  "}, {"email": ["a"]}, {"email": 5}):
+		assert ratelimit.recipient("sign_up", bad) is None
+	assert ratelimit.recipient("sign_up", None) is None
+
+
+def test_a_config_that_names_only_the_ip_keeps_the_default_site_counter(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"sign_up": [{"kind": "ip", "window": 60, "soft": 1, "hard": 2}]}
+	kinds = [limit.kind for limit in ratelimit.limits_for("sign_up")]
+	assert "site" in kinds and "recipient" in kinds and kinds.count("ip") == 1
+
+
+def test_a_refused_request_does_not_feed_the_shared_counters(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"sign_up": [
+			{"kind": "ip", "window": 3600, "soft": 1, "hard": 1},
+			{"kind": "site", "window": 3600, "soft": 100, "hard": 100},
+		]
+	}
+	identities = ids(recipient="a@example.com")
+	results = [ratelimit.check("sign_up", identities) for _ in range(5)]
+	assert [r.level for r in results] == [Level.OK] + [Level.HARD] * 4
+	site = [value for key, value in frappe_stub.cache.values.items() if b":site:" in key]
+	assert site == [1]  # only the first request reached the site counter
+
+
+def test_the_kinds_to_count_can_be_chosen(frappe_stub):
+	ratelimit.check("sign_up", ids(recipient="a@example.com"), kinds=("recipient",))
+	assert [key for key in frappe_stub.cache.values if b":recipient:" not in key] == []
+
+
+def test_an_unknown_address_is_not_counted(frappe_stub):
+	ratelimit.check("contact", {"ip": "unknown", "site": "*"})
+	assert [key for key in frappe_stub.cache.values if b":ip:" in key] == []
+
+
+def test_a_plus_tag_does_not_make_a_new_recipient():
+	assert ratelimit.recipient("sign_up", {"email": "Victim+spam1@Example.com"}) == "victim@example.com"
+	assert ratelimit.recipient("sign_up", {"email": "victim+x@example.com"}) == ratelimit.recipient(
+		"sign_up", {"email": "victim@example.com"}
+	)
+
+
+def test_the_soft_limits_of_account_and_recipient_equal_the_hard_ones_because_there_is_no_score_left_to_raise():
+	for action in ratelimit.RECIPIENT_FIELDS:
+		for limit in ratelimit.DEFAULT_LIMITS[action]:
+			if limit.kind in ("account", "recipient"):
+				assert limit.soft == limit.hard
+
+
+def test_a_repeated_kind_and_window_in_the_config_is_counted_once(frappe_stub):
+	row = {"kind": "ip", "window": 3600, "soft": 5, "hard": 9}
+	frappe_stub.conf["guard_limits"] = {"contact": [row, dict(row, soft=1, hard=2)]}
+	limits = [limit for limit in ratelimit.limits_for("contact") if limit.kind == "ip"]
+	assert limits == [Limit("ip", 3600, 1, 2)]  # the last one wins
+
+
+def test_unknown_clients_are_counted_per_action_and_window_without_a_limit(frappe_stub):
+	for _ in range(3):
+		ratelimit.check("contact", {"ip": "unknown", "site": "*"})
+	counts = {key: value for key, value in frappe_stub.cache.values.items() if b":unknown:" in key}
+	assert sorted(counts.values()) == [3, 3]  # the burst and the hourly window
+
+
+def test_with_an_unknown_client_the_site_limit_can_only_raise_the_score_never_refuse(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {"sign_up": [{"kind": "site", "window": 3600, "soft": 1, "hard": 2}]}
+	results = [ratelimit.check("sign_up", {"ip": "unknown", "site": "*"}) for _ in range(6)]
+	assert [r.level for r in results] == [
+		Level.OK,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+		Level.SOFT,
+	]
+	# a known client is refused by the same limit
+	assert [ratelimit.check("sign_up", {"ip": "1.2.3.4", "site": "*"}).level for _ in range(3)][
+		-1
+	] == Level.HARD
+
+
+def test_a_failing_logger_does_not_become_an_outage_of_the_counters(frappe_stub, monkeypatch):
+	from frappe_guard import clientip
+
+	def boom(name=None):
+		raise RuntimeError("log")
+
+	clientip._warned.clear()
+	monkeypatch.setattr(frappe_stub, "logger", boom)
+	assert clientip.identifier(
+		"x"
+	)  # warns about the missing encryption_key; the logger raises; nothing escapes
+
+
+def test_a_refund_never_leaves_a_counter_without_a_ttl(frappe_stub):
+	entry = ("sign_up", "ip", "1.2.3.4", 60)
+	# the key expired or was evicted between the count and the refund: it must come back with its TTL
+	ratelimit._refund([entry])
+	(key,) = frappe_stub.cache.values
+	assert frappe_stub.cache.values[key] == -1 and frappe_stub.cache.ttls[key] == 60
+
+
+def test_a_refund_of_nothing_makes_no_round_trip(frappe_stub):
+	ratelimit._refund([])
+	assert frappe_stub.cache.round_trips == 0
+
+
+def test_a_recipient_named_unknown_is_a_recipient_not_an_unknown_client(frappe_stub):
+	frappe_stub.conf["guard_limits"] = {
+		"reset_password": [{"kind": "recipient", "window": 3600, "soft": 1, "hard": 1}]
+	}
+	results = [
+		ratelimit.check("reset_password", {"ip": "1.2.3.4", "site": "*", "recipient": "unknown"})
+		for _ in range(3)
+	]
+	assert results[-1].level == Level.HARD
+	assert not any(b":unknown:" in key for key in frappe_stub.cache.values)
+
+
+def test_a_refund_that_fails_is_swallowed(frappe_stub):
+	frappe_stub.cache.down = True
+	ratelimit._refund(
+		[("sign_up", "ip", "1.2.3.4", 60)]
+	)  # no exception: a counter that was not refunded only over-counts
