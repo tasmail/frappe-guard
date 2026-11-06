@@ -116,9 +116,9 @@ that carry no secret are in the Single DocType `Guard Settings` (`default_mode`,
 | `guard_trusted_hops` | the number of trusted proxies; **no default**: until the platform writes the verified value every client is *unknown* (see Rate limit) |
 | `guard_ip_header` | the header that carries the client address, default `X-Forwarded-For` |
 
-A site without a secret or host list is *not configured*: it refuses the guarded actions in `enforce`, and passes them in
-`monitor`, in developer mode and in tests, **without logging anything** (check the keys before the rollout week, the log will not
-tell you). A missing key never opens a form in `enforce`.
+A site without a secret or host list is *not configured*: it refuses the guarded actions in `enforce`; in `monitor` it passes them
+and logs `outcome=not_configured` for each (look for it in the first hours of the rollout week); in developer mode and in tests it
+passes them silently. A missing key never opens a form in `enforce`.
 
 ## Why it is built this way
 
