@@ -1,13 +1,14 @@
 # frappe_guard
 
 CAPTCHA and rate limit for the registration, the login and the contact form of Frappe v15 sites (sign-up, password reset, the
-e-mail login link, the password login and the contact form).
+e-mail login link and the contact form; the password login is planned, see Status).
 
 Status: **under construction, nothing is released and it is not installed on any site yet.** Merged: the skeleton, the check core,
 the request hook, the rate limiter and the browser script. Not built yet: protection of the password `login` (**`login` is not
 protected today**), the script for the stock `/login` page (package P6: that page's sign-up, reset and e-mail-link forms send no
 token yet), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the migration of the contact form
-of the FossDoc shop (its own CAPTCHA check stays in `fossdoc_shop` for the download and the calculation: this app does not cover them).
+of the FossDoc shop (after the migration the check in `fossdoc_shop` remains only for the download and the calculation, which this
+app does not cover).
 **Cost in short:** microseconds per request that is not guarded; one or two Redis round trips and, for a guest, one call to Google
 per guarded request (see Performance).
 
@@ -85,7 +86,8 @@ accounts; the counters still bound the abuse. The forms and sign-up *fail closed
 The same policy governs an outage of Redis (the counters): with Redis down a closed action (the forms, sign-up) refuses everyone in
 `enforce`, an open one passes.
 
-**What it does not close.** Other guest endpoints of Frappe (newsletter `subscribe`, which mails a confirmation to an address the
+**What it does not close.** The download (`fossdoc_shop.downloads.request_download`) and the calculation
+(`fossdoc_shop.api.send_calculation`) of the FossDoc shop keep their own check inside `fossdoc_shop`. Other guest endpoints of Frappe (newsletter `subscribe`, which mails a confirmation to an address the
 caller chooses, Web Form `accept`, the comment `add_comment`, and any app's own) are **not guarded until a site adds them** to
 `guard_action_map`; a custom action has the address and site counters but no recipient counter. The password `login` (`cmd=login`, `/api/method/login`) is processed by Frappe's `LoginManager`
 inside `HTTPRequest()`, **before any hook**, so this hook cannot see it; it needs its own mechanism (package P7: a wrapper of
