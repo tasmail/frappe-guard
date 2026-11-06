@@ -3,8 +3,8 @@
 CAPTCHA and rate limit for the public forms and the guest endpoints of Frappe v15 sites (contact forms, sign-up, password reset,
 e-mail login link, downloads).
 
-Status: **under construction, nothing is released.** Merged: the skeleton, the check core and the request hook. In review: the
-rate limiter and the browser script. Not built yet: protection of the password `login` (it needs its own mechanism, see below;
+Status: **under construction, nothing is released.** Merged: the skeleton, the check core and the request hook. In review (this
+README describes them as they will be once they are merged): the rate limiter and the browser script. Not built yet: protection of the password `login` (it needs its own mechanism, see below;
 **`login` is not protected today**), the Press side that installs the app and writes the keys, Cloudflare Turnstile, and the
 migration of the code that lives in `fossdoc_shop`. It is not installed on any site yet.
 The plan, the decisions and the work packages are in `docs/guard/plan.md` of the infrastructure repository `tasmail/erpnext-infra`.
@@ -20,7 +20,7 @@ The public endpoints of a Frappe site are open to anyone, and bots use them for 
 
 Frappe's own protection does not cover this: the limit of `@rate_limit` is keyed on `frappe.local.request_ip`, which is the
 left-most entry of `X-Forwarded-For` and is chosen by the client (change the header, change the bucket); `sign_up` has no limit
-but 300 new users an hour for the whole site; the limit at the edge (nginx) sees only the path, not a `cmd` in a request body.
+but (by default) 300 new users an hour for the whole site; the limit at the edge (nginx) sees only the path, not a `cmd` in a request body.
 Before this app the FOSS-On-Line sites that this was written for (the platform is described in the plan) each carried their own
 copy of a CAPTCHA check, with no counters. This app does not replace Frappe's own `@rate_limit` (it stays) and does not overwrite
 `frappe.local.request_ip`; it adds its own counters that do not read that value.
@@ -93,8 +93,8 @@ the staff, a WAF, and the edge limit of the proxy (which stays and is extended o
 
 Every action has a mode: `off` (nothing is checked or counted), `monitor` (checked, counted and logged, **never refused**; only
 what did not pass is logged) or
-`enforce` (a failed check or a hard limit is refused with a validation error, HTTP 417, with one of three messages: the check
-failed, the check is not available, the check is not configured; or "too many requests"). The default mode is `monitor`; the
+`enforce` (a failed check or a hard limit is refused with a validation error, HTTP 417, with one of four messages: the check
+failed, the check is not available, the check is not configured, or "too many requests"). The default mode is `monitor`; the
 rollout plan keeps a site there for at least a week. `enforce` is switched per action in the site config, without a deploy. Only
 requests that did not pass are logged, to the `frappe_guard` logger (the action, the outcome, the mode, the score; never a token,
 a secret or an address). A mistyped value in `guard_actions` or in `Guard Settings` is ignored **and logged by field name**; an
@@ -118,7 +118,7 @@ that carry no secret are in the Single DocType `Guard Settings` (`default_mode`,
 
 A site without a secret or host list is *not configured*: it refuses the guarded actions in `enforce`; in `monitor` it passes them
 and logs `outcome=not_configured` for each (look for it in the first hours of the rollout week); in developer mode and in tests it
-passes them silently. A missing key never opens a form in `enforce`.
+passes them silently. Outside developer mode a missing key never opens a form in `enforce`.
 
 ## Why it is built this way
 
@@ -151,11 +151,12 @@ The default mode is `monitor`: nothing is refused. To enforce one action, in the
  "guard_trusted_hops": 1, "guard_actions": {"contact": {"mode": "enforce"}}}
 ```
 
-To go back, set the mode to `monitor` or `off` (the site config, no deploy; a process picks the Single DocType up within 30
-seconds). The threshold is 0.5 per action (`guard_actions: {"contact": {"threshold": 0.7}}`); above a soft limit it is raised by
+To go back, set the mode to `monitor` or `off`. A change of the site config applies at once (it is read on every request); a change
+of `Guard Settings` reaches each worker process within 30 seconds. The threshold is 0.5 per action (`guard_actions: {"contact": {"threshold": 0.7}}`); above a soft limit it is raised by
 0.2, at most to 1.0. The `action` that the browser passes to `FrappeGuard.request` is the action of the reCAPTCHA token and must
 equal the action name above (or `provider_action` if set): a token made for another action is refused (`action_mismatch`). The
-call to Google has a 3 second timeout. A refusal is HTTP 417 with one of: "The check of the form failed. Reload the page and try
+call to Google has 1.5 seconds to connect and 2.5 to read (about 4 seconds at worst), reuses its connection, is made at most 20
+at a time per process, and after 5 failures in a row it is not made for 15 seconds (the fail policy answers at once). A refusal is HTTP 417 with one of: "The check of the form failed. Reload the page and try
 again.", "The check of the form is not available now. Try again later.", "The check of the form is not configured" or "Too many
 requests. Try again later." A line of the log (`frappe_guard` logger): `action=sign_up outcome=low_score mode=monitor allow=True score=0.1`;
 a soft limit is not logged, a hard limit and a failed check are.
@@ -165,15 +166,20 @@ a soft limit is not logged, a hard limit and a failed check are.
 The hook runs on every request of a site, so its cost is pinned by tests (`tests/test_performance.py`), not only measured:
 
 - A request that is not guarded (a page, `/api/resource`, any other method): **no Redis, no database query, no call to the
-  provider**. The Python cost with a stub of Frappe (`scripts/bench_hook.py`): about 1 microsecond for a page, about 20 for an `/api`
-  call (the router match), about 2 for a `cmd` call.
+  provider** (apart from two rare cases: a name sent together with a `method` field is resolved once per process and site, and a
+  `/api/v2/method/<doctype>/<method>` whose method name is a guarded one loads the doctype module). The Python cost with a stub of
+  Frappe (`scripts/bench_hook.py`): about 1 microsecond for a page, about 20 for an `/api` call (the router match), 1 to 3 for a
+  `cmd` call; the real `frappe.local` is slower than the stub, but this stays microseconds to a few tens of microseconds, negligible
+  against the request itself.
 - A guarded request: **one round trip to Redis per counter phase** (all the counters of a phase in one MULTI/EXEC), so one for a
-  form, two for a guest's `sign_up` (the second after the CAPTCHA), one for a signed-in session; about 60 to 80 microseconds of
+  form, two for a guest's `sign_up` (the second after the CAPTCHA), one for a signed-in session; about 60 to 100 microseconds of
   Python on top, plus the round trips. A refused request costs at most one more round trip to give the counts back.
 - `Guard Settings` is read from the database once per process per 30 seconds, not per request (Frappe's own value cache lives for one
   request only).
-- The only slow step is the call to Google for a **guest's guarded request** (a form, a sign-up): up to 3 seconds, on the worker that
-  serves the request. The counters of address and site run **before** it, so a flood is refused without calling Google.
+- The only slow step is the call to Google for a **guest's guarded request** (a form, a sign-up): typically one round trip over a
+  kept connection, at worst about 4 seconds, on the worker that serves the request; it is capped at 20 calls at a time per process
+  and stopped for 15 seconds after 5 failures in a row, so a slow provider cannot hold every worker. The counters of address and
+  site run **before** it: once a hard limit is exceeded the request is refused without calling Google.
 - A hung Redis delays the requests of the guarded actions (the guard sets no timeout), a Redis that is down follows the fail policy.
 
 ## Rate limit
@@ -196,8 +202,8 @@ the request is refused (in `enforce`). Defaults (`ratelimit.py`; `guard_limits` 
 
 `ip` has two limits (the burst and the hourly one); naming `ip` in `guard_limits` replaces both. The `account` and `recipient`
 counters are counted after the CAPTCHA passed (for a guest), so there is no score left to raise: only their hard limit is active.
-Signed in: address, account, recipient and site are counted (in that order); a guest: address and site, then, after the CAPTCHA
-passed, the recipient. After the first hard limit nothing more is counted (the counts are given back): a request refused by the
+Signed in: address, account, recipient and site are counted (in that order); a guest: address and site, then the recipient, after
+the CAPTCHA passed (or when the request is not being refused: in `monitor`, or on a site that is not configured). After the first hard limit nothing more is counted (the counts are given back): a request refused by the
 address or account limit does not feed the site counter (one address cannot use up the site counter for everyone). A request
 refused for its CAPTCHA, or for the recipient cap, has already been counted by address and site.
 
